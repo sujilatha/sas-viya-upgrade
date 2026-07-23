@@ -1,0 +1,530 @@
+steps:
+  - id: Deployment_Preperation
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["-"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo " "
+        echo "Getting GKE cluster credentials..."
+        gcloud container clusters get-credentials ${_CLUSTER_NAME} --region ${_REGION} --project ${_PROJECT_ID} --dns-endpoint
+
+        # echo "Delete namespace ${_LOG_NS}"
+        # kubectl delete namespace "${_LOG_NS}" --ignore-not-found=true
+
+        # echo "Delete namespace ${_MON_NS}"
+        # kubectl delete namespace "${_MON_NS}" --ignore-not-found=true
+
+        # echo "Delete namespace ${_VIYA_NS}"
+        # kubectl delete namespace "${_VIYA_NS}" --ignore-not-found=true
+
+        # echo "Remove Contour Ingress Controller"
+        # helm uninstall contour -n ${_ING_NS} --ignore-not-found=true
+        # kubectl delete namespace ${_ING_NS} --ignore-not-found=true  
+        # kubectl delete httpproxy --all -n ${_VIYA_NS} --ignore-not-found=true
+
+        # echo "Uninstall CSI-Driver-NFS"
+        # helm uninstall csi-driver-nfs -n kube-system --ignore-not-found
+
+        echo " "
+        echo "Google Artifact Registry"
+        if ! gcloud artifacts repositories describe "${_AR_REPO}" \
+            --location="${LOCATION}" \
+            --project="${_PROJECT_ID}" >/dev/null 2>&1; then
+
+            echo "Repository does not exist. Creating..."
+            gcloud artifacts repositories create "${_AR_REPO}" \
+              --repository-format=docker \
+              --location="${LOCATION}" \
+              --description="Docker repository" \
+              --project="${_PROJECT_ID}"
+
+            gcloud --quiet auth configure-docker ${LOCATION}-docker.pkg.dev
+        else
+            echo "Repository already exists"
+        fi
+
+        echo " "
+        echo "Set up TLS files"
+        mkdir -p /workspace/shared/deploy/certs/
+        gcloud secrets versions access latest --secret="cert" > /workspace/shared/deploy/certs/${_TLS_NAME}.cer
+        gcloud secrets versions access latest --secret="key" > /workspace/shared/deploy/certs/${_TLS_NAME}.key
+        openssl rsa -in /workspace/shared/deploy/certs/${_TLS_NAME}.key -out /workspace/shared/deploy/certs/${_TLS_NAME}.key
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Prepare_Secrets_CSI_Driver_Artifacts
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deployment_Preperation"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install yq"
+        curl -s -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+
+        mkdir -p helm
+        cd helm
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+
+        echo " "
+        echo "Secret Store CSI Driver Helm Chart"
+        helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
+        helm repo update
+        helm pull secrets-store-csi-driver/secrets-store-csi-driver --untar
+
+        echo " "
+        echo "Secret Store CSI Driver Container Images"
+
+        IMAGES=($(helm template csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
+            | yq '.. | select(has("image")) | .image' \
+            | sed 's/@sha256.*//' \
+            | grep -v '^---$' \
+            | sort -u))
+
+        echo "Found images:"
+        printf '%s\n' "$${IMAGES[@]}"
+
+        echo " "
+        for IMAGE in "$${IMAGES[@]}"; do
+        echo "Processing $${IMAGE}"
+        docker pull -q "$${IMAGE}"
+
+        IMAGE_PATH_WITH_TAG="$${IMAGE#*/}"
+        IMAGE_PATH="$${IMAGE_PATH_WITH_TAG%%:*}"
+        TARGET_IMAGE="$${TARGET_REGISTRY}/$${IMAGE_PATH_WITH_TAG}"
+
+        echo "Tagging $${IMAGE} as $${TARGET_IMAGE}"
+        docker tag "$${IMAGE}" "$${TARGET_IMAGE}"
+
+        echo "Pushing $${TARGET_IMAGE}"
+        docker push -q "$${TARGET_IMAGE}"
+        echo " "
+        echo "$${TARGET_IMAGE}" >> /workspace/shared/images.txt
+        done  
+
+        echo " "
+        echo "Secret Store CSI Driver GCP Provider"
+        curl -s -L https://raw.githubusercontent.com/GoogleCloudPlatform/secrets-store-csi-driver-provider-gcp/main/deploy/provider-gcp-plugin.yaml --output /workspace/shared/provider-gcp-plugin.yaml
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Prepare_CSI_Driver_Artifacts
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deployment_Preperation"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install yq"
+        curl -s -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+
+        mkdir -p helm
+        cd helm
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+
+        echo " "
+        echo "NFS CSI Driver Helm Chart"
+        helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+        helm repo update
+        helm pull csi-driver-nfs/csi-driver-nfs --version ${_CSI_NFS_VERSION} --untar
+
+        echo " "
+        echo "NFS CSI Driver Container Images"
+
+        IMAGES=($(helm template csi-driver-nfs csi-driver-nfs/csi-driver-nfs  \
+            | yq '.. | select(has("image")) | .image' \
+            | sed 's/@sha256.*//' \
+            | grep -v '^---$' \
+            | sort -u))
+
+        echo "Found images:"
+        printf '%s\n' "$${IMAGES[@]}"
+
+        echo " "
+        for IMAGE in "$${IMAGES[@]}"; do
+        echo "Processing $${IMAGE}"
+        docker pull -q "$${IMAGE}"
+
+        IMAGE_PATH_WITH_TAG="$${IMAGE#*/}"
+        IMAGE_PATH="$${IMAGE_PATH_WITH_TAG%%:*}"
+        TARGET_IMAGE="$${TARGET_REGISTRY}/$${IMAGE_PATH_WITH_TAG}"
+
+        echo "Tagging $${IMAGE} as $${TARGET_IMAGE}"
+        docker tag "$${IMAGE}" "$${TARGET_IMAGE}"
+
+        echo "Pushing $${TARGET_IMAGE}"
+        docker push -q "$${TARGET_IMAGE}"
+        echo " "
+        echo "$${TARGET_IMAGE}" >> /workspace/shared/images.txt
+        done  
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Prepare_Ingress_Artifacts
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deployment_Preperation"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install yq"
+        curl -s -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+
+        mkdir -p helm
+        cd helm
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+
+        echo " "
+        echo "Contour Ingress Controller Helm Chart"
+
+        helm repo add contour https://projectcontour.github.io/helm-charts/
+        helm repo update
+        helm pull contour/contour --version ${_ING_VERSION} --untar
+
+        echo " "
+        echo "Contour Ingress Controller Images"
+        IMAGES=($(
+          helm template contour contour/contour \
+            | yq -r '
+                .. | select(type == "!!map" and (has("containers") or has("initContainers"))) |
+                (.containers[]?.image, .initContainers[]?.image)
+              ' \
+            | grep -v '^---$' \
+            | grep -v '^$' \
+            | sort -u
+        ))
+
+        echo "Found images:"
+        printf '%s\n' "$${IMAGES[@]}"
+
+        echo " "
+        for IMAGE in "$${IMAGES[@]}"; do
+          echo "Processing $${IMAGE}"
+          docker pull -q "$${IMAGE}"
+
+          IMAGE_PATH_WITH_TAG="$${IMAGE#*/}"
+          IMAGE_PATH="$${IMAGE_PATH_WITH_TAG%%:*}"
+          TARGET_IMAGE="$${TARGET_REGISTRY}/$${IMAGE_PATH_WITH_TAG}"
+
+          echo "Tagging $${IMAGE} as $${TARGET_IMAGE}"
+          docker tag "$${IMAGE}" "$${TARGET_IMAGE}"
+
+          echo "Pushing $${TARGET_IMAGE}"
+          docker push -q "$${TARGET_IMAGE}"
+          echo " "
+          echo "$${TARGET_IMAGE}" >> /workspace/shared/images.txt
+        done
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Prepare_SAS_Monitoring_Artifacts
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deployment_Preperation"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export USER_DIR=/workspace/shared/user_dir
+
+        echo "Cloning SAS Viya Monitoring for Kubernetes repository..."
+        cd /workspace/shared
+        git clone https://github.com/sassoftware/viya4-monitoring-kubernetes.git
+        cd viya4-monitoring-kubernetes
+        git checkout ${_V4M_VERSION}
+        cd /workspace/shared
+
+        echo "SAS Viya Monitoring and Logging Images to Artifact Registry"
+        IMAGES=($(grep -Eo '[a-z0-9./-]+:[a-z0-9._-]+' /workspace/shared/viya4-monitoring-kubernetes/ARTIFACT_INVENTORY.md \
+         | grep '/' \
+         | grep -v '^registry\.redhat\.io/openshift4/ose-oauth-proxy:latest$'))       
+
+        echo "Found images:"
+        printf '%s\n' "$${IMAGES[@]}"
+
+        for IMAGE in "$${IMAGES[@]}"; do
+          echo "Processing $${IMAGE}"
+          docker pull -q "$${IMAGE}"
+
+          IMAGE_PATH_WITH_TAG="$${IMAGE#*/}"
+          IMAGE_PATH="$${IMAGE_PATH_WITH_TAG%%:*}"
+          TARGET_IMAGE="$${TARGET_REGISTRY}/$${IMAGE_PATH_WITH_TAG}"
+
+          echo "Tagging $${IMAGE} as $${TARGET_IMAGE}"
+          docker tag "$${IMAGE}" "$${TARGET_IMAGE}"
+
+          echo "Pushing $${TARGET_IMAGE}"
+          docker push -q "$${TARGET_IMAGE}"
+          echo " "
+        done
+
+        echo " "
+        echo "Enable Access to Helm Chart Repositories"
+        REPOS=($(grep -Eo '\|[[:space:]]*[a-zA-Z0-9-]+[[:space:]]*\|[[:space:]]*https?://[^|]+' "/workspace/shared/viya4-monitoring-kubernetes/ARTIFACT_INVENTORY.md" \
+          | sed -E 's/^\|[[:space:]]*([a-zA-Z0-9-]+)[[:space:]]*\|[[:space:]]*(https?:\/\/[^|]+)/\1:\2/'))
+
+        echo "Found Repos:"
+        printf '%s\n' "$${REPOS[@]}"
+
+        echo " "
+        echo "Adding Helm repositories..."
+        for REPO in "$${REPOS[@]}"; do
+            NAME="$${REPO%%:*}"
+            URL="$${REPO#*:}"
+
+            echo "helm repo add $${NAME} $${URL}"
+            helm repo add "$${NAME}" "$${URL}"
+        done
+
+        echo " "
+        echo "Download the Helm Charts"
+        mkdir -p /workspace/shared/mon_helm
+
+        CHARTS=($(grep -Eo '\|[[:space:]]*[a-zA-Z0-9-]+[[:space:]]*\|[[:space:]]*[a-zA-Z0-9-]+[[:space:]]*\|[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' "/workspace/shared/viya4-monitoring-kubernetes/ARTIFACT_INVENTORY.md" \
+          | sed -E 's/^\|[[:space:]]*([a-zA-Z0-9-]+)[[:space:]]*\|[[:space:]]*([a-zA-Z0-9-]+)[[:space:]]*\|[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)/\1:\2:\3/'))
+
+        echo "Found Charts:"
+        printf '%s\n' "$${CHARTS[@]}"
+
+        echo " "
+        echo "Downloading Helm charts to mon_helm..."
+        for CHART in "$${CHARTS[@]}"; do
+            REPO_NAME="$${CHART%%:*}"
+            REST="$${CHART#*:}"
+            CHART_NAME="$${REST%%:*}"
+            VERSION="$${REST##*:}"
+
+            echo "helm pull --destination \"/workspace/shared/mon_helm\" --version $${VERSION} $${REPO_NAME}/$${CHART_NAME}"
+            helm pull --destination "/workspace/shared/mon_helm" --version "$${VERSION}" "$${REPO_NAME}/$${CHART_NAME}"
+        done
+
+        echo " "
+        echo "Download the Prometheus Operator CRDs"
+        PROM_VERSION=$(echo "$${IMAGES[@]}" | grep -o 'quay.io/prometheus-operator/prometheus-operator:[^ ]*' | cut -d':' -f2)
+        echo "$${PROM_VERSION}"
+
+        mkdir -p $${USER_DIR}/monitoring/prometheus-operator-crd/$${PROM_VERSION}
+        cd  $${USER_DIR}/monitoring/prometheus-operator-crd/$${PROM_VERSION}
+
+        BASE_URL=https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$${PROM_VERSION}/example/prometheus-operator-crd
+        for CRD in \
+          alertmanagerconfigs \
+          alertmanagers \
+          prometheuses \
+          prometheusrules \
+          podmonitors \
+          servicemonitors \
+          thanosrulers \
+          probes
+        do
+          curl -sSO $${BASE_URL}/monitoring.coreos.com_$${CRD}.yaml
+        done
+
+        echo " "
+        echo "Preparing my-viya4mon-user-dir"
+        cp -rp /workspace/shared/viya4-monitoring-kubernetes/samples/contour/path-based/*  $${USER_DIR} -r
+
+        find $${USER_DIR} -type f -exec sed -i "s/host\.cluster\.example\.com/${_VIYA_HOST}/g" {} +
+        find $${USER_DIR}/logging -type f -exec sed -i "s/    namespace: logging/    namespace: ${_LOG_NS}/g" {} +
+        find $${USER_DIR}/monitoring -type f -exec sed -i "s/    namespace: monitoring/    namespace: ${_MON_NS}/g" {} +
+
+        cat <<EOF > $${USER_DIR}/user.env
+        AIRGAP_DEPLOYMENT=true
+        AIRGAP_REGISTRY=$${TARGET_REGISTRY}
+        AIRGAP_IMAGE_PULL_SECRET_NAME=v4m-image-pull-secret
+        AIRGAP_HELM_FORMAT=tgz
+        AIRGAP_HELM_REPO=/workspace/shared/mon_helm
+        EOF
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Download_SAS_Viya_Artifacts
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deployment_Preperation"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install SAS Orders CLI Version ${_ORDERS_CLI_VERSION}"
+        curl -s -L https://github.com/sassoftware/viya4-orders-cli/releases/download/${_ORDERS_CLI_VERSION}/viya4-orders-cli_linux_amd64 --output /usr/local/bin/viya4-orders-cli
+        chmod +x /usr/local/bin/viya4-orders-cli
+
+        mkdir -p /workspace/shared/deploy/license
+        mkdir -p /workspace/shared/deploy/deployment-assets
+
+        echo "Set Environment Variables"
+        export ORDERS_CLI_ID=$(echo -n $(gcloud secrets versions access latest --secret="sas_orders_id") | base64)
+        export ORDERS_CLI_SECRET=$(echo -n $(gcloud secrets versions access latest --secret="sas_orders_secret") | base64)
+
+        echo " "
+        echo "Download SAS Viya Assets"
+        bash -c "cat << EOF > .viya4-orders-cli.yaml
+        apimClientCredentialsId: $${ORDERS_CLI_ID}
+        apimClientCredentialsSecret: $${ORDERS_CLI_SECRET}
+        EOF"
+
+        # Retry if SAS endpoint is unavaible  
+        for i in 1 2 3 4 5; do
+          viya4-orders-cli license ${_SAS_ORDER_NUMBER} ${_SAS_CADENCE_NAME} ${_SAS_CADENCE_VERSION} -p /workspace/shared/deploy/license -c .viya4-orders-cli.yaml && break
+          sleep 10
+        done
+
+        echo " "
+        for i in 1 2 3 4 5; do
+          viya4-orders-cli deploymentAssets ${_SAS_ORDER_NUMBER} ${_SAS_CADENCE_NAME} ${_SAS_CADENCE_VERSION}  -p /workspace/shared/deploy/deployment-assets -c .viya4-orders-cli.yaml && break
+          sleep 10
+        done
+
+        echo " "
+        for i in 1 2 3 4 5; do
+          viya4-orders-cli certs ${_SAS_ORDER_NUMBER} -p /workspace/shared/deploy/license -c .viya4-orders-cli.yaml && break
+          sleep 10
+        done
+
+        echo " "
+        echo "Remove Orders_CLI Credentials"
+        rm -f .viya4-orders-cli.yaml
+
+        export ASSETS=$(ls -rt /workspace/shared/deploy/deployment-assets/ | grep .tgz | tail -1)
+
+        echo " "
+        echo "Extract up SAS bases"
+        tar xfz /workspace/shared/deploy/deployment-assets/$${ASSETS} -C /workspace/shared/deploy/
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Prepare_SAS_Viya_Images
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Download_SAS_Viya_Artifacts"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install SAS Mirror Manager"
+        curl -s -L https://support.sas.com/installation/viya/4/sas-mirror-manager/lax/mirrormgr-linux.tgz --output /tmp/mirrormgr-linux.tgz
+        tar xzf /tmp/mirrormgr-linux.tgz  -C /usr/local/bin/
+        rm /tmp/mirrormgr-linux.tgz
+        rm -rf /usr/local/bin/esp-edge-extension /usr/local/bin/licenses /usr/local/bin/README.md
+
+        echo "Download and Push SAS Viya container images to Google Artifact Registry" 
+
+        export ASSETS=$(ls -rt /workspace/shared/deploy/deployment-assets/ | grep .tgz | tail -1)
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+
+        mkdir -p mirrormgr
+
+        mirrormgr mirror registry \
+          --no-progress \
+          --deployment-data /workspace/shared/deploy/license/SASViyaV4_${_SAS_ORDER_NUMBER}_certs.zip \
+          --destination $${TARGET_REGISTRY} \
+          --password $(gcloud auth print-access-token) \
+          --username 'oauth2accesstoken' \
+          --path mirrormgr \
+          --deployment-assets /workspace/shared/deploy/deployment-assets/$${ASSETS} \
+          --workers 16
+
+        set -o pipefail
+
+        echo " "
+        echo "Download SAS Viya OQ container image and push to Google Artifact Registry"
+
+        eval $(mirrormgr list remote docker login --deployment-data /workspace/shared/deploy/license/SASViyaV4_${_SAS_ORDER_NUMBER}_certs.zip) 2>/dev/null
+
+        SAS_OQ_IMAGE=$(mirrormgr list remote docker tags --deployment-data /workspace/shared/deploy/license/SASViyaV4_${_SAS_ORDER_NUMBER}_certs.zip --latest | grep sas-operational-qualification)
+        echo "Processing $${SAS_OQ_IMAGE}"
+        docker pull -q "$${SAS_OQ_IMAGE}"
+
+        echo "Tagging $${SAS_OQ_IMAGE} as $${TARGET_REGISTRY}/sas-operational-qualification"
+        docker tag $${SAS_OQ_IMAGE} $${TARGET_REGISTRY}/sas-operational-qualification
+
+        echo "Pushing $${TARGET_REGISTRY}/sas-operational-qualification"
+        docker push -q $${TARGET_REGISTRY}/sas-operational-qualification
+
+        echo " "
+        echo "Step Complete"
+
+substitutions:
+  _PROJECT_ID: bguk-buki-sas-viya-dev-6155527
+  _CLUSTER_NAME: sasvya-gke-dev
+  _REGION: europe-west2-b
+  _PG_USER: dbmsowner
+  _SAS_ORDER_NUMBER: "9D3KDR"
+  _AR_REPO: sasviya-repo-dev
+  _BUCKET: assets_sas_viya_dev
+  _ING_NS: ingress-dev
+  _VIYA_NS: sas-viya-dev
+  _MON_NS: monitoring-dev
+  _LOG_NS: logging-dev
+  _VIYA_HOST: aap-dv.bupa.com
+  _VIYA_ALIAS: aap-dv.gb.bupagroup.com
+  _TLS_NAME: aap-dv.bupa.com
+  _NFS_MOUNT: /mnt
+  _SASWORK: /mnt/disks/ssd0/saswork
+  _CAS_DISK_CACHE: /mnt/disks/ssd
+  _SAS_CADENCE_NAME: stable
+  _SAS_CADENCE_VERSION: "2026.07"
+  _CSI_NFS_VERSION: "4.13.4"
+  _ORDERS_CLI_VERSION: "2.0.1"
+  _KUSTOMIZE_VERSION: "5.4.3"
+  _ING_VERSION: "0.6.0"
+  _V4M_VERSION: "1.2.52"
+  #_OIDC_ATT_MAP: "preferred_username"
+  #_OIDC_NAME: "oidc_azure"
+
+timeout: 3600s # 1 hour
+tags:
+  - provision
+  - branch-$BRANCH_NAME

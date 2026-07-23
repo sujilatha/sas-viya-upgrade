@@ -1,0 +1,740 @@
+# common variables - discovery
+project_id = "bguk-buki-sas-discovery-prod"
+shared_vpc_project = "bgukhub-810905"
+region = "europe-west2"
+tfe_workspace_name = "gcp-sas-viya"
+environment = "dev"
+
+#API List
+apis_list = [
+  "compute.googleapis.com",
+  "container.googleapis.com",
+  "file.googleapis.com",
+  "iam.googleapis.com",
+  "logging.googleapis.com",
+  "monitoring.googleapis.com",
+  "serviceusage.googleapis.com",
+  "storage.googleapis.com", 
+  "sqladmin.googleapis.com",
+  "cloudkms.googleapis.com",    
+  "cloudfunctions.googleapis.com",
+  "pubsub.googleapis.com",
+  "iamcredentials.googleapis.com",
+  "cloudresourcemanager.googleapis.com",
+  "containeranalysis.googleapis.com",
+]
+
+# TFE runner IAM roles
+tfe_runner_roles = [
+  "roles/cloudsql.admin",
+  "roles/container.admin",
+  "roles/compute.networkAdmin",
+  "roles/compute.admin",
+  "roles/file.editor",
+  "roles/secretmanager.admin",
+  "roles/iam.workloadIdentityUser",
+]
+tfe_runner_member = "serviceAccount:tfe-rnrsa-sas-discovery-prod@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+
+# Cloud Build SA IAM roles
+cloudbuild_sa_roles = [
+  "roles/cloudbuild.builds.builder",
+  "roles/iam.serviceAccountUser",
+  "roles/compute.admin",
+  "roles/container.admin",
+  "roles/storage.admin",
+]
+cloudbuild_sa_member = "serviceAccount:86880715595-compute@developer.gserviceaccount.com"
+
+# Service Account vars
+service_accounts = {
+  gke_nodepool = {
+    name         = "gke-nodepool-sa"
+    display_name = "GKE Nodepool Service Account"
+  }
+}
+
+# Service Account IAM role access
+service_account_role_mappings = {
+  gke = {
+    member = "serviceAccount:gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    roles = [
+      "roles/container.defaultNodeServiceAccount",
+      "roles/artifactregistry.createOnPushWriter"
+    ]
+  }
+}
+
+# IAM role access at Secret level
+
+secret_role_mappings = {
+  KSA_email_client_id = {
+    secret_id = "sasmail_server_client_id"
+    member = "principal://iam.googleapis.com/projects/86880715595/locations/global/workloadIdentityPools/bguk-buki-sas-discovery-prod.svc.id.goog/subject/ns/sas-viya-dsc/sa/sas-programming-environment"
+    roles = [
+      "roles/secretmanager.secretAccessor"
+    ]
+  }
+
+  KSA_email_client_secret = {
+    secret_id = "sasmail_server_client_secret"
+    member = "principal://iam.googleapis.com/projects/86880715595/locations/global/workloadIdentityPools/bguk-buki-sas-discovery-prod.svc.id.goog/subject/ns/sas-viya-dsc/sa/sas-programming-environment"
+    roles = [
+      "roles/secretmanager.secretAccessor"
+    ]
+  }
+
+  KSA_entra_tenant_id = {
+    secret_id = "entra_id_tenant_id"
+    member = "principal://iam.googleapis.com/projects/86880715595/locations/global/workloadIdentityPools/bguk-buki-sas-discovery-prod.svc.id.goog/subject/ns/sas-viya-dsc/sa/sas-programming-environment"
+    roles = [
+      "roles/secretmanager.secretAccessor"
+    ]
+  }
+
+  KSA_snowflake_p8 = {
+    secret_id = "snowflake_batch_p8"
+    member = "principal://iam.googleapis.com/projects/86880715595/locations/global/workloadIdentityPools/bguk-buki-sas-discovery-prod.svc.id.goog/subject/ns/sas-viya-dsc/sa/sas-programming-environment"
+    roles = [
+      "roles/secretmanager.secretAccessor"
+    ]
+  }
+
+  KSA_snowflake_encrypt_key = {
+    secret_id = "snowflake_batch_encrypt_key"
+    member = "principal://iam.googleapis.com/projects/86880715595/locations/global/workloadIdentityPools/bguk-buki-sas-discovery-prod.svc.id.goog/subject/ns/sas-viya-dsc/sa/sas-programming-environment"
+    roles = [
+      "roles/secretmanager.secretAccessor"
+    ]
+  }
+}
+
+
+# GKE vars
+gke_cluster_name                  = "sasvya-gke-dsc"
+gke_regional                      = true
+gke_zones                         = ["europe-west2-a", "europe-west2-b"]
+vpc_network_name                  = "shared-vpc-prod"
+vpc_subnetwork_name               = "shared-vpc-sas-discoveryprod-europewest2"
+gke_ip_range_pods_name            = "sas-viya-gke-pods-range-dsc"
+gke_ip_range_services_name        = "sas-viya-gke-services-range-dsc"
+gke_release_channel               = "STABLE"
+gke_version                       = "1.35-gke.1057002"
+gke_http_load_balancing           = true
+gke_network_policy                = false
+gke_horizontal_pod_autoscaling    = true
+gke_filestore_csi_driver          = true
+gke_deploy_using_private_endpoint = true
+gke_master_ipv4_cidr_block        = "10.0.150.0/28"
+gke_dns_cache                     = false
+gke_network_tags                  = ["europe-west2"]
+gke_backup_agent_config           = true
+gke_master_authorized_networks = [
+  {
+    cidr_block   = "10.60.1.0/24"
+    display_name = "VPC"
+  },
+]
+gke_node_pools = [
+  {
+    name                   = "cas-worker"
+    machine_type           = "n2-highmem-16"
+   # node_locations         = "europe-west2-b"
+    min_count              = 1
+    max_count              = 5
+    local_ssd_count        = 0
+    local_ssd_ephemeral_storage_count = 2
+    spot                   = false
+    disk_size_gb           = 200
+    disk_type              = "pd-ssd"
+    image_type             = "COS_CONTAINERD"
+    enable_gcfs            = false
+    enable_gvnic           = false
+    logging_variant        = "DEFAULT"
+    auto_repair            = true
+    auto_upgrade           = true
+    create_service_account = false
+    service_account        = "gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    autoscaling            = true
+    preemptible            = false
+    initial_node_count     = 1
+  },
+  {
+    name                   = "cas-control"
+    machine_type           = "n2-highmem-16"
+   # node_locations         = "europe-west2-b"
+    min_count              = 1
+    max_count              = 2
+    local_ssd_count        = 0
+    local_ssd_ephemeral_storage_count = 2
+    spot                   = false
+    disk_size_gb           = 200
+    disk_type              = "pd-ssd"
+    image_type             = "COS_CONTAINERD"
+    enable_gcfs            = false
+    enable_gvnic           = false
+    logging_variant        = "DEFAULT"
+    auto_repair            = true
+    auto_upgrade           = true
+    create_service_account = false
+    service_account        = "gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    autoscaling            = true
+    preemptible            = false
+    initial_node_count     = 1
+  },
+  {
+    name                   = "compute"
+    machine_type           = "n2-highmem-8"
+    # node_locations         = "europe-west2-b"
+    min_count              = 1
+    max_count              = 12
+    local_ssd_count        = 0
+    local_ssd_ephemeral_storage_count = 4
+    spot                   = false
+    disk_size_gb           = 200
+    disk_type              = "pd-ssd"
+    image_type             = "COS_CONTAINERD"
+    enable_gcfs            = false
+    enable_gvnic           = false
+    logging_variant        = "DEFAULT"
+    auto_repair            = true
+    auto_upgrade           = true
+    create_service_account = false
+    service_account        = "gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    autoscaling            = true
+    preemptible            = false
+    initial_node_count     = 1
+  },
+  {
+    name                   = "stateless"
+    machine_type           = "n2-highmem-8"
+    # node_locations         = "europe-west2-b"
+    min_count              = 1
+    max_count              = 2
+    local_ssd_count        = 2
+    local_ssd_ephemeral_storage_count = 0
+    spot                   = false
+    disk_size_gb           = 200
+    disk_type              = "pd-ssd"
+    image_type             = "COS_CONTAINERD"
+    enable_gcfs            = false
+    enable_gvnic           = false
+    logging_variant        = "DEFAULT"
+    auto_repair            = true
+    auto_upgrade           = true
+    create_service_account = false
+    service_account        = "gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    autoscaling            = true
+    preemptible            = false
+    initial_node_count     = 1
+  },
+  {
+    name                   = "stateful"
+    machine_type           = "n2-highmem-8"
+   # node_locations         = "europe-west2-b"
+    min_count              = 1
+    max_count              = 2
+    local_ssd_count        = 2
+    local_ssd_ephemeral_storage_count = 0
+    spot                   = false
+    disk_size_gb           = 200
+    disk_type              = "pd-ssd"
+    image_type             = "COS_CONTAINERD"
+    enable_gcfs            = false
+    enable_gvnic           = false
+    logging_variant        = "DEFAULT"
+    auto_repair            = true
+    auto_upgrade           = true
+    create_service_account = false
+    service_account        = "gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    autoscaling            = true
+    preemptible            = false
+    initial_node_count     = 1
+  },
+  {
+    name                   = "default-pool"
+    machine_type           = "n2-highmem-8"
+   # node_locations         = "europe-west2-b"
+    min_count              = 1
+    max_count              = 6
+    local_ssd_count        = 2
+    local_ssd_ephemeral_storage_count = 0
+    spot                   = false
+    disk_size_gb           = 200
+    disk_type              = "pd-ssd"
+    image_type             = "COS_CONTAINERD"
+    enable_gcfs            = false
+    enable_gvnic           = false
+    logging_variant        = "DEFAULT"
+    auto_repair            = true
+    auto_upgrade           = true
+    create_service_account = false
+    service_account        = "gke-nodepool-sa@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+    autoscaling            = true
+    preemptible            = false
+    initial_node_count     = 1
+  },
+]
+gke_node_pools_oauth_scopes = {
+  all = [
+    "https://www.googleapis.com/auth/logging.write",
+    "https://www.googleapis.com/auth/monitoring",
+    "https://www.googleapis.com/auth/devstorage.read_only",
+    "https://www.googleapis.com/auth/servicecontrol",
+    "https://www.googleapis.com/auth/service.management.readonly",
+    "https://www.googleapis.com/auth/trace.append",
+  ]
+}
+gke_node_pools_labels = {
+  all          = { "all-pools-example" = "true" }
+  cas-worker   = { "workload.sas.com/class" = "casworker" }
+  cas-control  = { "workload.sas.com/class" = "cascontroller" }
+  compute      = { "workload.sas.com/class" = "compute", "launcher.sas.com/prepullImage" = "sas-programming-environment" }
+  stateless    = { "workload.sas.com/class" = "stateless" }
+  stateful     = { "workload.sas.com/class" = "stateful" }
+  default-pool = { "workload.sas.com/class" = "system" }
+}
+gke_node_pools_taints = {
+  all = [
+    {
+      key    = "all-pools-example"
+      value  = "true"
+      effect = "PREFER_NO_SCHEDULE"
+    },
+  ]
+  cas-worker = [
+    {
+      key    = "workload.sas.com/class"
+      value  = "casworker"
+      effect = "NO_SCHEDULE"
+    },
+  ]
+    cas-control = [
+    {
+      key    = "workload.sas.com/class"
+      value  = "cascontroller"
+      effect = "NO_SCHEDULE"
+    },
+  ]
+  compute = [
+    {
+      key    = "workload.sas.com/class"
+      value  = "compute"
+      effect = "NO_SCHEDULE"
+    },
+  ]
+  stateless = [
+    {
+      key    = "workload.sas.com/class"
+      value  = "stateless"
+      effect = "NO_SCHEDULE"
+    },
+  ]
+  stateful = [
+    {
+      key    = "workload.sas.com/class"
+      value  = "stateful"
+      effect = "NO_SCHEDULE"
+    },
+  ]
+}
+gke_node_pools_tags = {
+  all = []
+  default-node-pool = [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "europe-west2",
+  ]
+}
+
+# Filestore vars
+filestore_project_id                  = "bguk-buki-sas-discovery-prod"
+filestore_name                        = "dsc-sasviya-store"
+filestore_description                 = "Managed by Terraform"
+filestore_tier                        = "REGIONAL"
+filestore_file_shares = {
+  name        = "warehouse"
+  capacity_gb = "1024"
+}
+filestore_networks = {
+  network      = "projects/bgukhub-810905/global/networks/shared-vpc-prod"
+  modes        = ["MODE_IPV4"]
+  connect_mode = "PRIVATE_SERVICE_ACCESS"
+}
+filestore_deletion_protection_enabled = false
+filestore_enable_auto_backup          = true
+filestore_auto_backup_schedule        = "0 2 * * *"
+filestore_auto_backup_retention       = 7
+filestore_protocol                    = "NFS_V4_1"
+
+
+# GKE management VM vars
+
+jump_vm_service_account   = "86880715595-compute@developer.gserviceaccount.com"
+jump_vm_api_scope         = ["https://www.googleapis.com/auth/cloud-platform"]
+jump_vm_network_tags      = ["europe-west2"]
+
+vms = {
+  jumpserver = {
+    shared_vpc                = true
+    instance_type             = "linux"
+    instance_name             = "gke-mgmt"
+    machine_type              = "n2-standard-4"
+    boot_disk_size            = 100
+    image_project             = "debian-cloud"
+    image_family              = "debian-12"
+    zone                      = "europe-west2-a"
+    allow_stopping_for_update = true
+    network_interface         = {
+      network    = "projects/bgukhub-810905/global/networks/shared-vpc-prod"
+      subnetwork = "projects/bgukhub-810905/regions/europe-west2/subnetworks/shared-vpc-sas-discoveryprod-europewest2"
+    }
+    metadata_startup_script   = <<-EOF
+#!/bin/bash
+
+# Update package lists and upgrade existing packages
+sudo apt-get update -y
+sudo apt-get upgrade -y
+
+# Install common tools
+sudo apt-get install -y apt-transport-https ca-certificates gnupg unzip python3-pip git postgresql-client
+
+# Install Docker
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+  "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Install Google Cloud SDK and GKE gcloud auth plugin
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+sudo apt-get update -y
+sudo apt-get install -y google-cloud-sdk-gke-gcloud-auth-plugin
+
+# Install Kustomize 5.4.3
+# KUSTOMIZE_VERSION="v5.4.3"
+curl -s "https://api.github.com/repos/kubernetes-sigs/kustomize/releases/tags/kustomize%2Fv5.4.3" | grep browser_download_url | grep linux | cut -d '"' -f 4 | xargs curl -sL | tar xz
+sudo mv kustomize /usr/local/bin/
+
+# Install Helm v3.15.2
+# HELM_VERSION=v3.15.2
+wget "https://get.helm.sh/helm-v3.15.2-linux-amd64.tar.gz"
+tar -zxvf "helm-v3.15.2-linux-amd64.tar.gz"
+sudo mv linux-amd64/helm /usr/local/bin/helm
+rm -rf helm-v3.15.2-linux-amd64.tar.gz linux-amd64
+
+# Install SAS Viya CLI (Placeholder - replace with actual installation steps)
+echo "Installing SAS Viya CLI (placeholder - please add actual installation commands)"
+# Example:
+# curl -o /tmp/sas-viya-cli.deb "https://example.com/path/to/sas-viya-cli.deb"
+# sudo dpkg -i /tmp/sas-viya-cli.deb
+
+# Install Google Cloud SQL Auth Proxy v2.20.0
+# CLOUD_SQL_AUTH_PROXY_VERSION=v2.20.0
+sudo curl -L  https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.20.0/cloud-sql-proxy.linux.amd64 --output /usr/local/bin/cloud-sql-proxy
+sudo chmod +x /usr/local/bin/cloud-sql-proxy
+
+# Install kubectl
+sudo apt-get install kubectl
+
+# Set Up SharedServices Database
+for i in {1..10}; do
+    echo "Creating SharedServices..."
+    PGPASSWORD=$(gcloud secrets versions access latest --secret="postgres") psql -h $(gcloud sql instances list --format="value(ipAddresses.ipAddress)") -d 'postgres' -U 'dbmsowner'  <<PSQLEOF
+        CREATE DATABASE "SharedServices"  WITH OWNER = dbmsowner TEMPLATE = template0 LC_COLLATE = 'C' LC_CTYPE = 'C';
+        REVOKE ALL ON DATABASE "SharedServices" FROM public;
+        CREATE EXTENSION IF NOT EXISTS pgcrypto;
+        CREATE EXTENSION IF NOT EXISTS ltree;
+PSQLEOF
+    if [[ $? -eq 0 ]]; then
+        echo "Database created successfully!"
+        break
+    fi
+
+    echo "Failed, retrying in 30s..."
+    sleep 30
+done
+
+# Test SharedServices Database
+PGPASSWORD=$(gcloud secrets versions access latest --secret="postgres") psql -h $(gcloud sql instances list --format="value(ipAddresses.ipAddress)") -d 'postgres' -U 'dbmsowner'  <<PSQLEOF
+    SELECT * FROM pg_roles WHERE rolname = 'dbmsowner';
+    SELECT * FROM pg_extension;
+    SELECT version();
+    \l
+PSQLEOF
+
+# Mount Filestore
+sudo apt-get -y update &&
+sudo apt-get install nfs-common -y
+sudo mkdir -p /mnt/filestore
+
+for i in {1..10}; do
+    echo "Mounting Filestore..."
+    if sudo mount -t nfs -o vers=4.1,rw,hard,timeo=600,retrans=3,rsize=524288,wsize=524288,resvport,async,tcp,nconnect=2 $(gcloud filestore instances list --region=europe-west2 --format="value(networks.ipAddresses[0])"):/warehouse /mnt/filestore; then
+        echo "Mounted successfully!"
+        break
+    fi
+    echo "Mount failed, retrying in 10 seconds..."
+    sleep 30
+done
+
+sudo mkdir -p /mnt/filestore/sasfiles
+sudo chmod 777 /mnt/filestore/sasfiles
+
+sudo mkdir -p /mnt/filestore/access-clients/odbc 
+sudo mkdir -p /mnt/filestore/access-clients/jdbc
+sudo chmod -R 777 /mnt/filestore/access-clients/
+touch /mnt/filestore/access-clients/odbc/odbc.ini
+touch /mnt/filestore/access-clients/odbc/odbcinst.ini
+sudo chmod -R 777 /mnt/filestore/access-clients/
+
+# Install nfs4-acl-tools
+sudo apt install -y nfs4-acl-tools
+
+echo "GKE Management VM setup complete."
+      EOF
+    labels                    = {
+      "market_unit"                   = "bguk"
+      "business_unit"                 = "cf"
+      "cost_center"                   = "123"
+      "project_owner"                 = "david"
+      "budget_owner"                  = "bupa"
+      "function"                      = "dsc"
+      "product_name"                  = "sasviya"
+      "asset_function"                = "development"
+      "environment_type"              = "d"
+      "version_number"                = "1"
+      "blueprint"                     = "n"
+      "application_criticality"       = "high"
+      "notification_list"             = "none"
+      "stop_or_start_time"            = "na"
+      "data_to_be_encrypted"          = "na"
+      "date_of_deletion_of_resources" = "na"
+      "data_classification"           = "public"
+      "gdpr_classification"           = "na"
+      "pii_classification"            = "na"
+      "hds_hippa_certification"       = "na"
+    }
+  }
+
+  mirror_manager = {
+    shared_vpc                = true
+    instance_type             = "linux"
+    instance_name             = "mirror-manager"
+    machine_type              = "n2-standard-4"
+    boot_disk_size            = 200
+    image_project             = "debian-cloud"
+    image_family              = "debian-12"
+    zone                      = "europe-west2-a"
+    allow_stopping_for_update = true
+    network_interface         = {
+        network    = "projects/bgukhub-810905/global/networks/shared-vpc-prod"
+        subnetwork = "projects/bgukhub-810905/regions/europe-west2/subnetworks/shared-vpc-sas-discoveryprod-europewest2"
+      }
+    metadata_startup_script   = <<-EOF
+#!/bin/bash
+
+# Update package lists and upgrade existing packages
+sudo apt-get update -y
+sudo apt-get upgrade -y
+
+# Install common tools
+sudo apt-get install -y apt-transport-https ca-certificates gnupg unzip python3-pip git postgresql-client
+
+# Install Docker
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+  "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Install Google Cloud SDK and GKE gcloud auth plugin
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+sudo apt-get update -y
+sudo apt-get install -y google-cloud-sdk-gke-gcloud-auth-plugin kubectl
+
+# Install Helm v3.15.2
+# HELM_VERSION=v3.15.2
+wget "https://get.helm.sh/helm-v3.15.2-linux-amd64.tar.gz"
+tar -zxvf "helm-v3.15.2-linux-amd64.tar.gz"
+sudo mv linux-amd64/helm /usr/local/bin/helm
+rm -rf helm-v3.15.2-linux-amd64.tar.gz linux-amd64
+
+# Install SAS Mirror Manager 
+curl -L https://support.sas.com/installation/viya/4/sas-mirror-manager/lax/mirrormgr-linux.tgz --output /tmp/mirrormgr-linux.tgz
+sudo tar xzfv /tmp/mirrormgr-linux.tgz  -C /usr/local/bin/
+rm /tmp/mirrormgr-linux.tgz
+sudo rm -rf /usr/local/bin/esp-edge-extension /usr/local/bin/licenses /usr/local/bin/README.md
+
+# Install SAS Viya CLI (Placeholder - replace with actual installation steps)
+echo "Installing SAS Viya CLI (placeholder - please add actual installation commands)"
+# Example:
+# curl -o /tmp/sas-viya-cli.deb "https://example.com/path/to/sas-viya-cli.deb"
+# sudo dpkg -i /tmp/sas-viya-cli.deb
+
+# Install SAS Orders CLI 
+sudo curl -L https://github.com/sassoftware/viya4-orders-cli/releases/latest/download/viya4-orders-cli_linux_amd64 --output /usr/local/bin/viya4-orders-cli
+sudo chmod +x /usr/local/bin/viya4-orders-cli
+
+# Mount Filestore
+sudo apt-get -y update &&
+sudo apt-get install nfs-common -y
+sudo mkdir -p /mnt/filestore
+sudo mount -t nfs -o vers=4.1,rw,hard,timeo=600,retrans=3,rsize=524288,wsize=524288,resvport,async,tcp,nconnect=2 192.168.7.66:/warehouse /mnt/filestore
+
+# yq
+sudo curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+sudo chmod +x /usr/local/bin/yq
+
+echo "Mirror Manager VM setup complete."
+      EOF
+    labels                    = {  
+      "market_unit"                   = "bguk"
+      "business_unit"                 = "cf"
+      "cost_center"                   = "123"
+      "project_owner"                 = "ameya"
+      "budget_owner"                  = "bupa"
+      "function"                      = "tfe"
+      "product_name"                  = "test"
+      "asset_function"                = "demo"
+      "environment_type"              = "s"
+      "version_number"                = "1"
+      "blueprint"                     = "n"
+      "application_criticality"       = "high"
+      "notification_list"             = "none"
+      "stop_or_start_time"            = "na"
+      "data_to_be_encrypted"          = "na"
+      "date_of_deletion_of_resources" = "na"
+      "data_classification"           = "public"
+      "gdpr_classification"           = "na"
+      "pii_classification"            = "na"
+      "hds_hippa_certification"       = "na"
+    }
+  }
+
+  web_load_test = {
+    shared_vpc                = true
+    instance_type             = "linux"
+    instance_name             = "web-load-test-vm"
+    machine_type              = "n2-highmem-8"
+    boot_disk_size            = 100
+    image_project             = "debian-cloud"
+    image_family              = "debian-12"
+    zone                      = "europe-west2-a"
+    allow_stopping_for_update = true
+    network_interface         = {
+       network    = "projects/bgukhub-810905/global/networks/shared-vpc-prod"
+       subnetwork = "projects/bgukhub-810905/regions/europe-west2/subnetworks/shared-vpc-sas-discoveryprod-europewest2"
+    }
+    metadata_startup_script   = <<-EOF
+      #!/bin/bash
+
+      # Update package lists and upgrade existing packages
+      sudo apt-get update -y
+      sudo apt-get upgrade -y
+
+      echo "Web Application Load Test VM setup complete."
+      EOF
+    labels                    = {
+        "market_unit"                   = "bguk"
+        "business_unit"                 = "cf"
+        "cost_center"                   = "123"
+        "project_owner"                 = "ameya"
+        "budget_owner"                  = "bupa"
+        "function"                      = "tfe"
+        "product_name"                  = "test"
+        "asset_function"                = "demo"
+        "environment_type"              = "s"
+        "version_number"                = "1"
+        "blueprint"                     = "n"
+        "application_criticality"       = "high"
+        "notification_list"             = "none"
+        "stop_or_start_time"            = "na"
+        "data_to_be_encrypted"          = "na"
+        "date_of_deletion_of_resources" = "na"
+        "data_classification"           = "public"
+        "gdpr_classification"           = "na"
+        "pii_classification"            = "na"
+        "hds_hippa_certification"       = "na"
+      }
+  }
+}
+
+# Postgre vars
+postgres_secret_project_id = "bguk-buki-sas-discovery-prod"
+postgres_secret_name       = "postgres"
+postgres_secret_version    = "latest"
+postgres_project_id           = "bguk-buki-sas-discovery-prod"
+postgres_instance_name        = "sasviya-postgres-dsc"  
+postgres_database_version     = "POSTGRES_17"
+postgres_enable_default_user  = true  
+postgres_user_name            = "dbmsowner"  
+postgres_deletion_protection  = false
+postgres_ip_configuration = {
+  ipv4_enabled    = false
+  private_network = "projects/bgukhub-810905/global/networks/shared-vpc-prod"
+}
+postgres_tier              = "db-perf-optimized-N-4"
+postgres_disk_size         = 128
+postgres_availability_type = "REGIONAL"
+postgres_zone              = "europe-west2-a"
+postgres_backup_configuration = {
+  enabled                        = true
+  start_time                     = "22:55"
+  location                       = "europe-west2"  
+  point_in_time_recovery_enabled = true  
+  transaction_log_retention_days = null
+  retained_backups               = 15
+  retention_unit                 = "COUNT"
+}
+postgres_user_labels = {
+  "market_unit"                   = "bguk"
+  "business_unit"                 = "cf"
+  "cost_center"                   = "123"
+  "project_owner"                 = "david"
+  "budget_owner"                  = "bupa"
+  "function"                      = "sasviyadsc"
+  "product_name"                  = "sasviya"
+  "environment_type"              = "dsc"
+  "version_number"                = "1"
+  "blueprint"                     = "n"
+  "application_criticality"       = "high"
+  "notification_list"             = "none"
+  "stop_or_start_time"            = "na"
+  "data_to_be_encrypted"          = "default"
+  "date_of_deletion_of_resources" = "na"
+  "data_classification"           = "public"
+  "gdpr_classification"           = "na"
+  "pii_classification"            = "na"
+  "hds_hippa_certification"       = "na"
+}
+postgres_database_flags = [
+  {
+    name  = "cloudsql.iam_authentication"
+    value = "on"
+  },  
+  {
+    name  = "max_connections"
+    value = "1024"
+  },
+]
+
+postgres_iam_users = [
+  {
+    id    = "cloudsql_pg_sa",
+    email = "tfe-admsa-sas-discovery-prod@bguk-buki-sas-discovery-prod.iam.gserviceaccount.com"
+  },
+  {
+    id    = "dbadmin",
+    email = "ameya.bakshi@bupa.com"
+  },
+ ]

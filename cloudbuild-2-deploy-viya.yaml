@@ -1,0 +1,1517 @@
+steps:
+  - id: SAS_Viya_Config_Setup
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Download_SAS_Viya_Artifacts"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        export DIR=/workspace/shared/deploy/site-config
+
+        echo "Create directories"
+        mkdir -p $${DIR}/security
+        mkdir -p $${DIR}/postgres
+        mkdir -p $${DIR}/sas-programming-environment/storage/
+        mkdir -p $${DIR}/sas-compute-server/configure/
+        mkdir -p $${DIR}/cas/configure
+        mkdir -p $${DIR}/sas-launcher/configure/
+        mkdir -p $${DIR}/data-access/
+        mkdir -p $${DIR}/sas-cleanwork
+
+        echo "Copy template files"
+        cp /workspace/shared/deploy/sas-bases/examples/security/customer-provided-ingress-certificate.yaml $${DIR}/security/
+        cp /workspace/shared/deploy/sas-bases/examples/security/openssl-generated-ingress-certificate.yaml $${DIR}/security/
+        cp /workspace/shared/deploy/sas-bases/examples/postgres/postgres-user.env $${DIR}/postgres/platform-postgres-user.env
+        cp /workspace/shared/deploy/sas-bases/examples/postgres/dataserver-transformer.yaml $${DIR}/postgres/sas-platform-postgres-dataserver-transformer.yaml
+        cp /workspace/shared/deploy/sas-bases/examples/postgres/cloud-sql-proxy.yaml $${DIR}/postgres/platform-postgres-cloud-sql-proxy.yaml
+        cp /workspace/shared/deploy/sas-bases/examples/sas-programming-environment/storage/change-viya-volume-storage-class.yaml $${DIR}/sas-programming-environment/storage/
+        cp /workspace/shared/deploy/sas-bases/examples/sas-compute-server/configure/compute-server-add-nfs-mount.yaml $${DIR}/sas-compute-server/configure/
+        cp /workspace/shared/deploy/sas-bases/examples/cas/configure/cas-add-nfs-mount.yaml $${DIR}/cas/configure/
+        cp /workspace/shared/deploy/sas-bases/examples/cas/configure/cas-auto-restart.yaml $${DIR}/cas/configure/
+        cp /workspace/shared/deploy/sas-bases/examples/mirror/mirror.yaml $${DIR}/
+        cp /workspace/shared/deploy/sas-bases/examples/sas-launcher/configure/launcher-memory-requests-limits.yaml $${DIR}/sas-launcher/configure/launcher-memory-requests-limits.yaml
+        cp /workspace/shared/deploy/sas-bases/examples/sas-launcher/configure/launcher-cpu-requests-limits.yaml $${DIR}/sas-launcher/configure/launcher-cpu-requests-limits.yaml       
+        cp /workspace/shared/deploy/sas-bases/examples/data-access/* $${DIR}/data-access/
+
+        echo "Download Cleanwork Config Files"
+        export URL=https://raw.githubusercontent.com/sascommunities/technical-support-code/main/usage/administration/sas-cleanwork-vk
+
+        curl -O --output-dir $${DIR}/sas-cleanwork $${URL}/sas-cleanwork.sh
+        curl -O --output-dir $${DIR}/sas-cleanwork $${URL}/sas-cleanwork-ds.yaml
+        curl -O --output-dir $${DIR}/sas-cleanwork $${URL}/sas-cleanwork-ds-patch.yaml
+
+        echo "Prepare assets"
+        echo "Set up PSQL access file"
+        gcloud secrets versions access latest --secret="sas-viya-runner-key" > $${DIR}/postgres/ServiceAccountKey.json
+        chmod 777 $${DIR}/postgres/ServiceAccountKey.json
+
+        echo "Add write permissions"
+        chmod -R +w $${DIR}/
+
+        echo " "
+        echo "Step Complete"
+
+  - id: SAS_Viya_Write_Custom_Files
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Download_SAS_Viya_Artifacts","SAS_Viya_Config_Setup"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export SASBOOT_PW=$(gcloud secrets versions access latest --secret="sasboot")
+        export FILESTORE_IP=$(gcloud filestore instances list --region=${LOCATION} --format="value(networks.ipAddresses[0])")
+        export FILESTORE_SHARE=$(gcloud filestore instances list --region=${LOCATION} --format="value(fileShares[0].name)")
+
+        echo "SAS Viya Deployment Prepare Configuration"
+
+        echo "Create kustomization.yaml"
+        bash -c "cat << EOF > /workspace/shared/deploy/kustomization.yaml
+        ---
+        namespace: ${_VIYA_NS}
+        resources:
+            - sas-bases/base
+            - sas-bases/overlays/network/projectcontour.io
+            - site-config/security/openssl-generated-ingress-certificate.yaml
+            - sas-bases/overlays/cas-server
+            - sas-bases/overlays/postgres/platform-postgres
+            - site-config/postgres/platform-postgres-cloud-sql-proxy.yaml
+            - sas-bases/overlays/internal-elasticsearch
+            - sas-bases/overlays/cas-server/auto-resources
+            - site-config/sas-cleanwork/sas-cleanwork-ds.yaml
+
+        configurations:
+            - sas-bases/overlays/required/kustomizeconfig.yaml
+
+        transformers:
+            - sas-bases/overlays/internal-elasticsearch/sysctl-transformer.yaml
+            - sas-bases/overlays/required/transformers.yaml
+            - site-config/mirror.yaml
+            - sas-bases/overlays/cas-server/auto-resources/remove-resources.yaml
+            - sas-bases/overlays/internal-elasticsearch/internal-elasticsearch-transformer.yaml
+            - sas-bases/overlays/sas-programming-environment/enable-admin-script-access.yaml
+            - sas-bases/overlays/backup/sas-scheduled-backup-incr-job-enable.yaml
+            - site-config/postgres/sas-platform-postgres-dataserver-transformer.yaml
+            - site-config/sas-launcher/configure/launcher-cpu-requests-limits.yaml
+            - site-config/sas-launcher/configure/launcher-memory-requests-limits.yaml
+            - site-config/sas-programming-environment/storage/change-viya-volume-storage-class.yaml
+            - site-config/sas-compute-server/configure/compute-server-add-nfs-mount.yaml
+            - site-config/cas/configure/cas_disk_cache-config.yaml
+            - site-config/cas/configure/cas-add-nfs-mount.yaml
+            - site-config/cas/configure/cas-auto-restart.yaml
+            - site-config/cas/configure/cas-add-allowlist-paths.yaml
+            - sas-bases/overlays/postgres/external-postgres/gcp-tls-transformer.yaml
+            - site-config/data-access/data-mounts-cas.yaml
+            - site-config/data-access/data-mounts-job.yaml
+            - sas-bases/overlays/data-access/data-env.yaml
+            - site-config/sas-cleanwork/sas-cleanwork-ds-patch.yaml
+
+        components:
+            - sas-bases/components/security/core/base/full-stack-tls
+            - sas-bases/components/security/network/projectcontour.io/httpproxy/full-stack-tls
+
+        patches:
+        - path: site-config/storageclass.yaml
+          target:
+            kind: PersistentVolumeClaim
+            annotationSelector: sas.com/component-name in (sas-backup-job,sas-data-quality-services,sas-commonfiles,sas-cas-operator,sas-pyconfig,sas-risk-cirrus-search,sas-risk-modeling-core,sas-event-stream-processing-studio-app)
+
+        generators:
+            - site-config/security/customer-provided-ingress-certificate.yaml
+
+        secretGenerator:
+        - name: sas-consul-config
+          behavior: merge
+          files:
+            - SITEDEFAULT_CONF=site-config/sitedefault.yaml
+        - name: platform-postgres-user
+          envs:
+            - site-config/postgres/platform-postgres-user.env
+        - name: sql-proxy-serviceaccountkey
+          files:
+            - credentials.json=site-config/postgres/ServiceAccountKey.json
+        - name: sas-image-pull-secrets
+          behavior: replace
+          type: kubernetes.io/dockerconfigjson
+          literals:
+          - .dockerconfigjson=$(kubectl create secret docker-registry --dry-run=client regcred --docker-server=$${TARGET_REGISTRY} --docker-username=oauth2accesstoken  --docker-password=$(gcloud auth print-access-token)  --output="jsonpath={.data.\.dockerconfigjson}" | base64 --decode)
+
+        configMapGenerator:
+        - name: ingress-input
+          behavior: merge
+          literals:
+            - INGRESS_HOST=${_VIYA_HOST}
+        - name: sas-shared-config
+          behavior: merge
+          literals:
+            - SAS_SERVICES_URL=https://${_VIYA_HOST}:443
+        - name: input 
+          behavior: merge
+          literals:
+          - IMAGE_REGISTRY=$${TARGET_REGISTRY}
+        - name: sas-access-config
+          behavior: merge
+          envs:
+            - site-config/data-access/sas-access.properties
+        - name: sas-cleanwork-script
+          files:
+          - site-config/sas-cleanwork/sas-cleanwork.sh
+        EOF"
+
+        echo "Create storageclass.yaml"
+        bash -c "cat << EOF > /workspace/shared/deploy/site-config/storageclass.yaml
+        kind: RWXStorageClass
+        metadata:
+            name: wildcard
+        spec:
+            storageClassName: sas
+        EOF"
+
+        echo "Create Sitedefault.yaml"
+        bash -c "cat << EOF > /workspace/shared/deploy/site-config/sitedefault.yaml
+        ---
+        config:
+          application:
+            sas.identities:
+              identifier.generateGids: true
+            sas.identities.providers:
+              ldap.enabled: off
+              scim.enabled: on
+            sas.logon.initial:
+              user: sasboot
+              password: $${SASBOOT_PW}
+              reset.enabled: false
+            sas.environmentmanager:
+              logsPageAppURL: https://${_VIYA_ALIAS}/dashboards/
+              metricsAppURL: https://${_VIYA_ALIAS}/grafana/
+            sas.studio:
+              fileNavigationCustomRootPath: ${_NFS_MOUNT}
+              fileNavigationRoot: CUSTOM
+              showServerFiles: true
+            sas.logon.jwt:
+              policy.accessTokenValiditySeconds: 21600
+              policy.global.accessTokenValiditySeconds: 21600
+            sas.scheduler:
+              dstEnabled: True
+              timeZone: 'Europe/London'
+          compute:
+            sas.compute.server:
+              configuration_options:
+                contents: |
+                  -MEMSIZE  4G
+                  -SORTSIZE 3G
+                  -CPUCOUNT 2
+                  -REALMEMSIZE 3G
+                  -TIMEZONE Europe/London
+              startup_commands:
+                contents:
+                  umask 0002
+        EOF"
+
+        echo "Configure CAS Allowlist Paths"
+        bash -c "cat << EOF > /workspace/shared/deploy/site-config/cas/configure/cas-add-allowlist-paths.yaml
+        ---
+        apiVersion: builtin
+        kind: PatchTransformer
+        metadata:
+          name: cas-add-allowlist-paths
+        patch: |-
+          - op: add
+            path: /spec/appendCASAllowlistPaths/-
+            value:
+              ${_NFS_MOUNT}
+        target:
+          group: viya.sas.com
+          kind: CASDeployment
+          name: .*
+          version: v1alpha1
+        EOF"
+
+        echo "Configure CASDISKCACHE"
+        bash -c "cat << EOF > /workspace/shared/deploy/site-config/cas/configure/cas_disk_cache-config.yaml
+        ---
+        apiVersion: builtin
+        kind: PatchTransformer
+        metadata:
+          name: cas-cache-hostpath
+        patch: |-
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: cas-cache-nvme0
+              hostPath: 
+                path: ${_CAS_DISK_CACHE}0
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: cas-cache-nvme1
+              hostPath: 
+                path: ${_CAS_DISK_CACHE}1
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: cas-cache-nvme0
+              mountPath: /cas/cache-nvme0 
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: cas-cache-nvme1
+              mountPath: /cas/cache-nvme1 
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/env/-
+            value:
+              name: CASENV_CAS_DISK_CACHE
+              value: "/cas/cache-nvme0:/cas/cache-nvme1"
+        target:
+          version: v1alpha1
+          group: viya.sas.com
+          kind: CASDeployment
+          labelSelector: "sas.com/cas-server-default"
+        EOF"
+
+        echo "Configure CAS Data Mounts Patch for Access Clients"
+        bash -c "cat << EOF >/workspace/shared/deploy/site-config/data-access/data-mounts-cas.yaml
+        apiVersion: builtin
+        kind: PatchTransformer
+        metadata:
+          name: data-mounts-cas
+        patch: |-
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: access
+              mountPath: "/access-clients"
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: access
+              nfs:
+                path: /$${FILESTORE_SHARE}/access-clients/
+                server: $${FILESTORE_IP}
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: jdbcjars
+              mountPath: "/data-drivers/jdbc"
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: jdbcjars
+              nfs:
+                path: /$${FILESTORE_SHARE}/access-clients/jdbc
+                server: $${FILESTORE_IP}
+        target:
+          kind: CASDeployment
+          annotationSelector: sas.com/sas-access-config=true
+        EOF"
+
+        echo "Configure Compute Data Mounts Patch for Access Clients "
+        bash -c "cat << EOF >/workspace/shared/deploy/site-config/data-access/data-mounts-job.yaml
+        apiVersion: builtin
+        kind: PatchTransformer
+        metadata:
+          name: data-mounts-job
+        patch: |-
+          - op: add
+            path: /template/spec/containers/0/volumeMounts/-
+            value:
+              name: access
+              mountPath: "/access-clients"
+          - op: add
+            path: /template/spec/volumes/-
+            value:
+              name: access
+              nfs:
+                path: /$${FILESTORE_SHARE}/access-clients/
+                server: $${FILESTORE_IP}
+          - op: add
+            path: /template/spec/containers/0/volumeMounts/-
+            value:
+              name: jdbcjars
+              mountPath: "/data-drivers/jdbc"
+          - op: add
+            path: /template/spec/volumes/-
+            value:
+              name: jdbcjars
+              nfs:
+                path: /$${FILESTORE_SHARE}/access-clients/jdbc
+                server: $${FILESTORE_IP}
+        target:
+          kind: PodTemplate
+          annotationSelector: sas.com/sas-access-config=true
+        EOF"
+
+        echo "Create SAS Access Configuraton File"
+        bash -c "cat << EOF >/workspace/shared/deploy/site-config/data-access/sas-access.properties
+        ODBCINI=/access-clients/odbc/odbc.ini
+        ODBCINST=/access-clients/odbc/odbcinst.ini
+        EOF"
+
+        echo " "
+        echo "Step Complete"
+
+  - id: SAS_Viya_Write_Custom_Filestore_Files
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Download_SAS_Viya_Artifacts","SAS_Viya_Config_Setup"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Create CAS NFS Mounts"
+        bash -c "cat << EOF >/workspace/shared/deploy/site-config/cas/configure/cas-add-nfs-mount.yaml
+        apiVersion: builtin
+        kind: PatchTransformer
+        metadata:
+          name: cas-add-nfs-mount
+        patch: |-
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-dsc
+              nfs:
+                path: {{ NFS-PATH-TO-BE-MOUNTED }}/discovery
+                server: {{ HOST }}
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-dsc
+              mountPath: "/mnt/discovery/ukida"
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-tst
+              nfs:
+                path: {{ NFS-PATH-TO-BE-MOUNTED }}/test
+                server: {{ HOST }}
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-tst
+              mountPath: "/mnt/test/ukida"
+          - op: add
+            path: /spec/controllerTemplate/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-prd
+              nfs:
+                path: {{ NFS-PATH-TO-BE-MOUNTED }}/production
+                server: {{ HOST }}
+          - op: add
+            path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-prd
+              mountPath: "/mnt/production/ukida"
+        target:
+          group: viya.sas.com
+          kind: CASDeployment
+          name: .*
+          version: v1alpha1
+        EOF"
+
+        echo "Create Compute NFS Mounts"
+        bash -c "cat << EOF >/workspace/shared/deploy/site-config/sas-compute-server/configure/compute-server-add-nfs-mount.yaml
+        apiVersion: builtin
+        kind: PatchTransformer
+        metadata:
+          name: compute-server-add-nfs-mount
+        patch: |-
+          - op: add
+            path: /template/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-dsc-ukida
+              nfs:
+                path: {{ PATH-TO-BE-MOUNTED }}/discovery
+                server: {{ HOST }}
+          - op: add
+            path: /template/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-dsc-ukida
+              mountPath: "/mnt/discovery/ukida"
+          - op: add
+            path: /template/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-tst-ukida
+              nfs:
+                path: {{ PATH-TO-BE-MOUNTED }}/test
+                server: {{ HOST }}
+          - op: add
+            path: /template/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-tst-ukida
+              mountPath: "/mnt/test/ukida"
+          - op: add
+            path: /template/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-prd-ukida
+              nfs:
+                path: {{ PATH-TO-BE-MOUNTED }}/production
+                server: {{ HOST }}
+          - op: add
+            path: /template/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-prd-ukida
+              mountPath: "/mnt/production/ukida"
+          - op: add
+            path: /template/spec/volumes/-
+            value:
+              name: {{ MOUNT-NAME }}-dsc-pa
+              nfs:
+                path: {{ PATH-TO-BE-MOUNTED }}/sasfiles
+                server: {{ HOST }}
+          - op: add
+            path: /template/spec/containers/0/volumeMounts/-
+            value:
+              name: {{ MOUNT-NAME }}-dsc-pa
+              mountPath: "/mnt/discovery/pricing_actuarial"
+        target:
+          kind: PodTemplate
+          version: v1
+          labelSelector: sas.com/template-intent=sas-launcher
+        EOF"
+
+        echo " "
+        echo "Step Complete"
+
+  - id: SAS_Viya_Modify_Config
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Download_SAS_Viya_Artifacts","SAS_Viya_Config_Setup"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export FILESTORE_IP=$(gcloud filestore instances list --region=${LOCATION} --format="value(networks.ipAddresses[0])" --project ${_PROJECT_ID})
+        export FILESTORE_SHARE=$(gcloud filestore instances list --region=${LOCATION} --format="value(fileShares[0].name)" --project ${_PROJECT_ID})
+        export CONNECTION_NAME=$(gcloud sql instances describe $(gcloud sql instances list --format="value(name)") --format="value(connectionName)")
+        export PGPASSWORD=$(gcloud secrets versions access latest --secret="postgres")
+        export PG_HOST=$(gcloud sql instances list --format="value(ipAddresses.ipAddress)")
+
+        echo "SAS Viya Deployment Prepare Configuration"
+
+        echo "Configure Security"
+        sed -i "s|{{ INGRESS_CERTIFICATE_FILE_NAME }}|certs/${_TLS_NAME}.cer|g" /workspace/shared/deploy/site-config/security/customer-provided-ingress-certificate.yaml
+        sed -i "s|{{ INGRESS_KEY_FILE_NAME }}|certs/${_TLS_NAME}.key|g" /workspace/shared/deploy/site-config/security/customer-provided-ingress-certificate.yaml
+        sed -i "s|.*- ca.crt={{ INGRESS_CA_CERTIFICATE_FILE_NAME }}.*|#   - ca.crt={{ INGRESS_CA_CERTIFICATE_FILE_NAME }}|g" /workspace/shared/deploy/site-config/security/customer-provided-ingress-certificate.yaml
+
+        echo "Configure External Postgres"
+        echo "Create platform-postgres-user.env"    
+        sed -i "s/{{ DB-ROLE }}/${_PG_USER}/g" /workspace/shared/deploy/site-config/postgres/platform-postgres-user.env
+        sed -i "s/{{ DB-ROLE-PASSWORD }}/$${PGPASSWORD}/g" /workspace/shared/deploy/site-config/postgres/platform-postgres-user.env
+
+        echo "Create platform-postgres-dataserver-transformer.yaml"
+        sed -i "s/{{ POSTGRES-USER-SECRET-NAME }}/platform-postgres-user/g" /workspace/shared/deploy/site-config/postgres/sas-platform-postgres-dataserver-transformer.yaml
+        sed -i "s/{{ DB-HOST }}/$${PG_HOST}/g" /workspace/shared/deploy/site-config/postgres/sas-platform-postgres-dataserver-transformer.yaml
+        sed -i "s/{{ DB-PORT }}/5432/g" /workspace/shared/deploy/site-config/postgres/sas-platform-postgres-dataserver-transformer.yaml
+        sed -i "s/{{ DATASERVER-NAME }}/sas-platform-postgres/g" /workspace/shared/deploy/site-config/postgres/sas-platform-postgres-dataserver-transformer.yaml
+
+        echo "Create cloud-sql-proxy.yaml"
+        sed -i "s/{{ POSTGRES-SERVER-NAME }}/platform-postgres/g" /workspace/shared/deploy/site-config/postgres/platform-postgres-cloud-sql-proxy.yaml
+        sed -i "s/{{ CLOUD-SQL-PROXY-IMAGE-NAME }}/gcr.io\/cloudsql-docker\/gce-proxy\:1.20.2/g" /workspace/shared/deploy/site-config/postgres/platform-postgres-cloud-sql-proxy.yaml
+        sed -i "s/{{ CLOUD-SQL-PROXY-INSTANCE-NAME }}/$${CONNECTION_NAME}/g" /workspace/shared/deploy/site-config/postgres/platform-postgres-cloud-sql-proxy.yaml
+
+        echo "Configure SAS WORK"
+        sed -i "s|{{ VOLUME-STORAGE-CLASS }}|hostPath:\n        path: ${_SASWORK}|g" /workspace/shared/deploy/site-config/sas-programming-environment/storage/change-viya-volume-storage-class.yaml
+
+        echo "Configure Compute NFS mount"
+        sed -i "s|{{ MOUNT-NAME }}|compute-nfs|g" /workspace/shared/deploy/site-config/sas-compute-server/configure/compute-server-add-nfs-mount.yaml
+        sed -i "s|path: {{ PATH-TO-BE-MOUNTED }}|path: /$${FILESTORE_SHARE}|g" /workspace/shared/deploy/site-config/sas-compute-server/configure/compute-server-add-nfs-mount.yaml
+        sed -i "s|{{ HOST }}|$${FILESTORE_IP}|g" /workspace/shared/deploy/site-config/sas-compute-server/configure/compute-server-add-nfs-mount.yaml
+        # sed -i "s|mountPath: {{ PATH-TO-BE-MOUNTED }}|mountPath: \"${_NFS_MOUNT}\"|g" /workspace/shared/deploy/site-config/sas-compute-server/configure/compute-server-add-nfs-mount.yaml
+
+        echo "Configure CAS NFS mount"
+        sed -i "s|{{ MOUNT-NAME }}|cas-nfs|g" /workspace/shared/deploy/site-config/cas/configure/cas-add-nfs-mount.yaml
+        sed -i "s|{{ NFS-PATH-TO-BE-MOUNTED }}|/$${FILESTORE_SHARE}|g" /workspace/shared/deploy/site-config/cas/configure/cas-add-nfs-mount.yaml
+        sed -i "s|{{ HOST }}|$${FILESTORE_IP}|g" /workspace/shared/deploy/site-config/cas/configure/cas-add-nfs-mount.yaml
+        # sed -i "s|{{ CONTAINER-MOUNT-PATH }}|\"${_NFS_MOUNT}\"|g" /workspace/shared/deploy/site-config/cas/configure/cas-add-nfs-mount.yaml
+
+        echo "Configure Mirror Manager"
+        sed -i "s|{{ MIRROR-HOST }}|$${TARGET_REGISTRY}|g" /workspace/shared/deploy/site-config/mirror.yaml
+
+        echo "Create launcher-memory-requests-limits.yaml"
+        sed -i "s|{{ DEFAULT-MEMORY-REQUEST }}|300M|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-memory-requests-limits.yaml
+        sed -i "s|{{ MAX-MEMORY-REQUEST }}|500M|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-memory-requests-limits.yaml
+        sed -i "s|{{ DEFAULT-MEMORY-LIMIT }}|4Gi|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-memory-requests-limits.yaml
+        sed -i "s|{{ MAX-MEMORY-LIMIT }}|4Gi|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-memory-requests-limits.yaml
+
+        echo "Create launcher-cpu-requests-limits.yaml"
+        sed -i "s|{{ DEFAULT-CPU-REQUEST }}|50m|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-cpu-requests-limits.yaml
+        sed -i "s|{{ MAX-CPU-REQUEST }}|100m|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-cpu-requests-limits.yaml
+        sed -i "s|{{ DEFAULT-CPU-LIMIT }}|2|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-cpu-requests-limits.yaml
+        sed -i "s|{{ MAX-CPU-LIMIT }}|2|g" /workspace/shared/deploy/site-config/sas-launcher/configure/launcher-cpu-requests-limits.yaml
+
+        echo "Create SAS Cleanwork configuration"
+        sed -i "s|{{ VOLUME-STORAGE-CLASS }}|hostPath:\n        path: ${_SASWORK}|g" /workspace/shared/deploy/site-config/sas-cleanwork/sas-cleanwork-ds-patch.yaml 
+        sed -i "s|{{ SLEEP-TIME-IN-SECONDS }}|3600|g" /workspace/shared/deploy/site-config/sas-cleanwork/sas-cleanwork-ds-patch.yaml 
+        sed -i "s|kuberentes|kubernetes|g" /workspace/shared/deploy/site-config/sas-cleanwork/sas-cleanwork-ds-patch.yaml 
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Deploy_Ingress
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Prepare_Ingress_Artifacts"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install JQ"
+        apt-get install -y -qq jq >/dev/null
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export STATIC_IP=$(gcloud compute addresses describe $(gcloud compute addresses list --format="get(name)" | grep int) --region ${LOCATION} --format="get(address)")
+
+        while IFS= read -r line; do
+          [[ -z "$$line" ]] && continue
+          repo_path="$${line%:*}"
+          tag="$${line##*:}"
+          component="$$(basename "$$repo_path")"
+          var_name="$(echo "$$component" | tr '[:lower:]-' '[:upper:]_')"
+          eval "$${var_name}_REPO=\"$$repo_path\""
+          eval "$${var_name}_TAG=\"$$tag\""
+          # echo "  $${var_name}_REPO=\"$(eval echo \${$${var_name}_REPO})\""
+          # echo "  $${var_name}_TAG=\"$(eval echo \${$${var_name}_TAG})\""
+        done < "/workspace/shared/images.txt"     
+
+        echo " "
+        echo "Contour Ingress Controller Installation"
+
+        kubectl get namespace ${_ING_NS} >/dev/null 2>&1 || kubectl create namespace ${_ING_NS}
+
+        kubectl get secret -n ${_ING_NS} fallback-tls >/dev/null 2>&1 \
+          || kubectl create secret tls -n ${_ING_NS} fallback-tls \
+            --key="/workspace/shared/deploy/certs/${_TLS_NAME}.key" \
+            --cert="/workspace/shared/deploy/certs/${_TLS_NAME}.cer"
+
+        cat <<EOF > fallback-delegation.yaml
+        apiVersion: projectcontour.io/v1
+        kind: TLSCertificateDelegation
+        metadata:
+          name: fallback-delegation
+          namespace: ${_ING_NS}
+        spec:
+          delegations:
+          - secretName: fallback-tls
+            targetNamespaces:
+            - "*"
+        EOF
+
+        helm upgrade --install contour contour/contour \
+        --namespace ${_ING_NS} \
+        --create-namespace \
+        --version ${_ING_VERSION} \
+        --set envoy.service.type=LoadBalancer \
+        --set envoy.service.loadBalancerIP=$${STATIC_IP} \
+        --set envoy.service.annotations."cloud\.google\.com/load-balancer-type"="Internal" \
+        --set envoy.replicaCount=3 \
+        --set contour.replicaCount=3 \
+        --set envoy.service.externalTrafficPolicy=Local \
+        --set contour.resources.requests.cpu=25m \
+        --set contour.resources.requests.memory=50Mi \
+        --set contour.resources.limits.cpu=1 \
+        --set contour.resources.limits.memory=1024Mi \
+        --set envoy.resources.requests.cpu=25m \
+        --set envoy.resources.requests.memory=50Mi \
+        --set envoy.resources.limits.cpu=1 \
+        --set envoy.resources.limits.memory=1024Mi \
+        --set envoy.shutdownManager.resources.requests.cpu=25m \
+        --set envoy.shutdownManager.resources.requests.memory=50Mi \
+        --set envoy.shutdownManager.resources.limits.cpu=200m \
+        --set envoy.shutdownManager.resources.limits.memory=128Mi \
+        --set configInline.compression.algorithm=disabled \
+        --set configInline.timeouts.request-timeout=infinity \
+        --set envoy.tolerations[0].key=all-pools-example \
+        --set envoy.tolerations[0].operator=Equal \
+        --set-string envoy.tolerations[0].value=true \
+        --set envoy.tolerations[0].effect=PreferNoSchedule \
+        --set envoy.tolerations[1].key=workload.sas.com/class \
+        --set envoy.tolerations[1].operator=Exists \
+        --set envoy.tolerations[1].effect=NoSchedule \
+        --set contour.image.registry=$${TARGET_REGISTRY} \
+        --set contour.image.repository=projectcontour/contour \
+        --set contour.image.tag=$${CONTOUR_TAG} \
+        --set envoy.image.registry=$${TARGET_REGISTRY} \
+        --set envoy.image.repository=envoyproxy/envoy \
+        --set envoy.image.tag=$${ENVOY_TAG} \
+        --set configInline.tls.fallback-certificate.name=fallback-tls \
+        --set configInline.tls.fallback-certificate.namespace=${_ING_NS}
+
+        echo " "
+        set +o pipefail
+        while true; do
+          not_ready=$(kubectl get pods -n ${_ING_NS} --no-headers | grep -v 'Running' | wc -l)
+          if [ "$not_ready" -eq 0 ]; then
+              echo "All ingress pods are running"
+              break
+          else
+              echo "Waiting for ingress pods to be ready..."
+              sleep 5
+          fi
+        done
+
+        echo " "
+        echo "Ingress Rollout Status"
+        kubectl rollout status ds/contour-envoy -n ${_ING_NS}
+
+        echo " "
+        echo "Ingress Pods"
+        kubectl get pods -n ${_ING_NS}
+
+        sleep 30
+
+        echo " "
+        echo "Ingress Service"
+        kubectl get svc -n ${_ING_NS}
+
+        echo " "
+        echo "Apply Contour TLS Delegation"
+        kubectl apply -f fallback-delegation.yaml
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Deploy_Secrets_CSI_Driver
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Prepare_Secrets_CSI_Driver_Artifacts","Deploy_Ingress"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+
+        while IFS= read -r line; do
+          [[ -z "$$line" ]] && continue
+          repo_path="$${line%:*}"
+          tag="$${line##*:}"
+          component="$$(basename "$$repo_path")"
+          var_name="$(echo "$$component" | tr '[:lower:]-' '[:upper:]_')"
+          eval "$${var_name}_REPO=\"$$repo_path\""
+          eval "$${var_name}_TAG=\"$$tag\""
+          # echo "  $${var_name}_REPO=\"$(eval echo \${$${var_name}_REPO})\""
+          # echo "  $${var_name}_TAG=\"$(eval echo \${$${var_name}_TAG})\""
+        done < "/workspace/shared/images.txt"
+
+        echo " "
+        echo "Secret Store CSI Driver Installation"
+        helm upgrade --install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
+          --namespace kube-system \
+          --set linux.crds.image.repository=$${DRIVER_CRDS_REPO} \
+          --set linux.crds.image.tag=$${DRIVER_CRDS_TAG} \
+          --set linux.image.repository=$${DRIVER_REPO} \
+          --set linux.image.tag=$${DRIVER_TAG} \
+          --set linux.registrarImage.repository=$${CSI_NODE_DRIVER_REGISTRAR_REPO} \
+          --set linux.registrarImage.tag=$${CSI_NODE_DRIVER_REGISTRAR_TAG} \
+          --set linux.livenessProbeImage.repository=$${LIVENESSPROBE_REPO} \
+          --set linux.livenessProbeImage.tag=$${LIVENESSPROBE_TAG} 
+
+        echo " "
+        echo "Deploy Secret Store CSI Driver GCP Provider"
+        kubectl apply -f /workspace/shared/provider-gcp-plugin.yaml
+
+        echo " "
+        echo "Patch Secret Store CSI Driver GCP Provider DaemonSet"
+        kubectl patch ds csi-secrets-store-provider-gcp -n kube-system --type='merge' -p '
+        spec:
+          template:
+            spec:
+              tolerations:
+              - key: "workload.sas.com/class"
+                operator: "Equal"
+                value: "compute"
+                effect: "NoSchedule"
+              - key: "workload.sas.com/class"
+                operator: "Equal"
+                value: "compute"
+                effect: "NoExecute"
+        '
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Deploy_NFS_CSI_Driver
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Prepare_CSI_Driver_Artifacts","Deploy_Secrets_CSI_Driver"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export FILESTORE_IP=$(gcloud filestore instances list --region=${LOCATION} --format="value(networks.ipAddresses[0])")
+        export FILESTORE_SHARE=$(gcloud filestore instances list --region=${LOCATION} --format="value(fileShares[0].name)")
+
+        while IFS= read -r line; do
+          [[ -z "$$line" ]] && continue
+          repo_path="$${line%:*}"
+          tag="$${line##*:}"
+          component="$$(basename "$$repo_path")"
+          var_name="$(echo "$$component" | tr '[:lower:]-' '[:upper:]_')"
+          eval "$${var_name}_REPO=\"$$repo_path\""
+          eval "$${var_name}_TAG=\"$$tag\""
+          # echo "  $${var_name}_REPO=\"$(eval echo \${$${var_name}_REPO})\""
+          # echo "  $${var_name}_TAG=\"$(eval echo \${$${var_name}_TAG})\""
+        done < "/workspace/shared/images.txt"
+
+        echo " "
+        echo "NFS CSI Driver Installation"
+        helm upgrade --install csi-driver-nfs helm/csi-driver-nfs \
+          --namespace kube-system \
+          --version ${_CSI_NFS_VERSION} \
+          --set storageClass.parameters.server=$${FILESTORE_IP} \
+          --set storageClass.parameters.share=/$${FILESTORE_SHARE} \
+          --set storageClass.name="sas" \
+          --set driver.mountPermissions="0777" \
+          --set feature.enableFSGroupPolicy=false \
+          --set storageClass.create=true \
+          --set storageClass.reclaimPolicy=Delete \
+          --set storageClass.volumeBindingMode=Immediate \
+          --set storageClass.parameters.subdir=\${pvc.metadata.namespace}/\${pvc.metadata.name}/\${pv.metadata.name} \
+          --set storageClass.mountOptions="{rsize=524288,wsize=524288,retrans=3,timeo=600,hard,resvport,async,nconnect=2,nolock}" \
+          --set image.nfs.repository=$${NFSPLUGIN_REPO} \
+          --set image.nfs.tag=$${NFSPLUGIN_TAG} \
+          --set image.csiProvisioner.repository=$${CSI_PROVISIONER_REPO} \
+          --set image.csiProvisioner.tag=$${CSI_PROVISIONER_TAG} \
+          --set image.csiResizer.repository=$${CSI_RESIZER_REPO} \
+          --set image.csiResizer.tag=$${CSI_RESIZER_TAG} \
+          --set image.csiSnapshotter.repository=$${CSI_SNAPSHOTTER_REPO} \
+          --set image.csiSnapshotter.tag=$${CSI_SNAPSHOTTER_TAG} \
+          --set image.livenessProbe.repository=$${LIVENESSPROBE_REPO} \
+          --set image.livenessProbe.tag=$${LIVENESSPROBE_TAG} \
+          --set image.nodeDriverRegistrar.repository=$${CSI_NODE_DRIVER_REGISTRAR_REPO} \
+          --set image.nodeDriverRegistrar.tag=$${CSI_NODE_DRIVER_REGISTRAR_TAG}
+
+        echo " "
+        echo "Check for StorageClass"
+        set +o pipefail
+        while true; do
+            kubectl get storageclass sas > /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+              echo "StorageClass 'sas' is available"
+              break
+            else
+              echo "Waiting for StorageClass 'sas' to be created..."
+              sleep 3
+            fi
+        done
+
+        set -o pipefail
+
+        echo " "
+        echo "Csi-nfs-controller Rollout Status"
+        kubectl rollout status deployment/csi-nfs-controller -n kube-system
+
+        echo " "
+        echo "Csi-nfs-controller Pods"
+        kubectl get pods -n kube-system | grep csi-nfs
+
+        echo " "
+        echo "Storage Class"
+        kubectl describe sc sas
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Deploy_SAS_Logging
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Prepare_SAS_Monitoring_Artifacts","Deploy_Ingress","Deploy_NFS_CSI_Driver"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install yq"
+        curl -s -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+
+        echo "SAS Viya Logging Deployment Preparation"
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export OPENSEARCH_PW=$(gcloud secrets versions access latest --secret="opensearch")
+        export USER_DIR=/workspace/shared/user_dir
+        export LOG_NS=${_LOG_NS}
+
+        echo "Creating Logging Namespace"
+        kubectl get namespace ${_LOG_NS} >/dev/null 2>&1 || kubectl create namespace ${_LOG_NS}
+
+        echo "Creating Logging Image Pull Secrets"
+        kubectl get secret -n ${_LOG_NS} v4m-image-pull-secret >/dev/null 2>&1 \
+          || kubectl create secret docker-registry v4m-image-pull-secret \
+          --docker-server=$${TARGET_REGISTRY} \
+          --docker-username=oauth2accesstoken --docker-password=$(gcloud auth print-access-token) \
+          --namespace=${_LOG_NS}
+
+        echo "Creating Logging TLS Secrets"
+        kubectl get secret -n ${_LOG_NS} v4m-ingress-tls-secret >/dev/null 2>&1 \
+          || kubectl create secret tls -n ${_LOG_NS} v4m-ingress-tls-secret \
+            --key="/workspace/shared/deploy/certs/${_TLS_NAME}.key" \
+            --cert="/workspace/shared/deploy/certs/${_TLS_NAME}.cer"
+
+        echo " "
+        echo "SAS Viya Logging Deployment Execution"
+        cd /workspace/shared/viya4-monitoring-kubernetes/
+
+        echo "Deploying SAS Viya Logging"
+        logging/bin/deploy_logging.sh
+
+        echo " "
+        echo "Changing SAS Viya Logging Admin Password"
+        logging/bin/change_internal_password.sh admin $${OPENSEARCH_PW}
+
+        echo " "
+        echo "Apply Root and Logging HTTPProxy"
+        kubectl -n ${_LOG_NS} apply -f $${USER_DIR}/logging/osd_httpproxy.yaml
+
+        echo " "
+        echo "Step Complete" 
+
+  - id: Deploy_SAS_Monitoring
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Prepare_SAS_Monitoring_Artifacts","Deploy_Ingress","Deploy_SAS_Logging"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install yq"
+        curl -s -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+
+        echo "SAS Viya Monitoring Deployment Preparation"
+
+        echo "Set Environment Variables"
+        export TARGET_REGISTRY=${LOCATION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}
+        export GRAFANA_PW=$(gcloud secrets versions access latest --secret="grafana")
+        export USER_DIR=/workspace/shared/user_dir
+        export MON_NS=${_MON_NS}
+        export VIYA_NS=${_VIYA_NS}
+
+        kubectl get namespace ${_MON_NS} >/dev/null 2>&1 || kubectl create namespace ${_MON_NS}
+        kubectl get namespace ${_VIYA_NS} >/dev/null 2>&1 || kubectl create namespace ${_VIYA_NS}
+
+        echo "Creating Monitoring Image Pull Secrets"
+        kubectl get secret -n ${_MON_NS} v4m-image-pull-secret >/dev/null 2>&1 \
+          || kubectl create secret docker-registry v4m-image-pull-secret \
+          --docker-server=$${TARGET_REGISTRY} \
+          --docker-username=oauth2accesstoken --docker-password=$(gcloud auth print-access-token) \
+          --namespace=${_MON_NS}
+
+        kubectl get secret -n ${_VIYA_NS} v4m-image-pull-secret >/dev/null 2>&1 \
+          || kubectl create secret docker-registry v4m-image-pull-secret \
+          --docker-server=$${TARGET_REGISTRY} \
+          --docker-username=oauth2accesstoken --docker-password=$(gcloud auth print-access-token) \
+          --namespace=${_VIYA_NS}
+
+        echo "Creating Monitoring TLS Secret"
+        kubectl get secret -n ${_MON_NS} v4m-ingress-tls-secret >/dev/null 2>&1 \
+          || kubectl create secret tls -n ${_MON_NS} v4m-ingress-tls-secret\
+          --key="/workspace/shared/deploy/certs/${_TLS_NAME}.key" \
+          --cert="/workspace/shared/deploy/certs/${_TLS_NAME}.cer"
+
+        echo " "
+        echo "SAS Viya Monitoring Deployment Execution"
+        cd /workspace/shared/viya4-monitoring-kubernetes/
+
+        echo "Deploying SAS Viya Monitoring Cluster"
+        monitoring/bin/deploy_monitoring_cluster.sh
+
+        echo " "
+        echo "Changing SAS Viya Logging Admin Password"
+        monitoring/bin/change_grafana_admin_password.sh -p $${GRAFANA_PW}
+
+        echo " "
+        echo "Deploying SAS Viya Monitoring"
+        monitoring/bin/deploy_monitoring_viya.sh
+
+        echo " "
+        echo "Apply Root and Monitoring HTTPProxy"
+        kubectl -n ${_MON_NS} apply -f $${USER_DIR}/monitoring/grafana_httpproxy.yaml
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Deploy_SAS_Viya
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Prepare_SAS_Viya_Images","SAS_Viya_Config_Setup","SAS_Viya_Write_Custom_Files","SAS_Viya_Modify_Config"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        echo "Install Kustomize ${_KUSTOMIZE_VERSION}"
+        curl -s "https://api.github.com/repos/kubernetes-sigs/kustomize/releases/tags/kustomize%2Fv${_KUSTOMIZE_VERSION}" | grep browser_download_url | grep linux | cut -d '"' -f 4 | xargs curl -sL | tar xz
+        mv kustomize /usr/local/bin/
+
+        echo " "
+        echo "SAS Viya Deployment Execution"
+        kubectl get namespace ${_VIYA_NS} >/dev/null 2>&1 || kubectl create namespace ${_VIYA_NS}
+
+        echo " "
+        echo "Clean up sas-common files job"
+        if kubectl get job -l app.kubernetes.io/name=sas-commonfiles -n ${_VIYA_NS} >/dev/null 2>&1; then
+          kubectl delete job -l app.kubernetes.io/name=sas-commonfiles -n ${_VIYA_NS} --ignore-not-found
+        fi
+
+        cd /workspace/shared/deploy
+
+        set -euo pipefail
+
+        echo " "
+        echo "Create site.yaml"
+        kustomize build -o site.yaml 2> >(grep -v "Warning: 'vars' is deprecated. Please use 'replacements' instead.")
+
+        echo " "
+        echo "Apply site.yaml 1 of 5"
+        echo "CRDs"
+        kubectl apply --selector="sas.com/admin=cluster-api" --server-side --force-conflicts -f site.yaml \
+          2> >(grep -v \
+          -e 'unchanged' \
+          -e 'ensure CRDs are installed first' \
+          -e 'resource mapping not found for name')
+
+        echo " "
+        echo "Apply site.yaml 2 of 5"
+        echo " Service Accounts and Roles"
+        kubectl apply --selector="sas.com/admin=cluster-wide" -f site.yaml \
+          | grep -v 'unchanged'
+
+        echo " "
+        echo "Apply site.yaml 3 of 5"
+        echo "Rolebindings, ConfigMaps, Secrets and PVCs"
+        kubectl apply --selector="sas.com/admin=cluster-local" -f site.yaml --prune \
+          2> >(grep -v \
+          -e 'unchanged' \
+          -e 'Deprecated: kubectl apply will no longer prune non-namespaced resources by default when used with the --namespace flag in a future release' \
+          -e 'Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice')
+
+        echo " "
+        echo "Apply site.yaml 4 of 5"
+        echo "ConfigMaps, Services, Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, PDBs, HPAs, Child HTTPProxys, Pod Templates, etc"
+        kubectl apply --selector="sas.com/admin=namespace" -f site.yaml --prune \
+          2> >(grep -v \
+          -e 'unchanged' \
+          -e 'Deprecated: kubectl apply will no longer prune non-namespaced resources by default when used with the --namespace flag in a future release' \
+          -e 'Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice' \
+          -e 'duplicate port name "http" with spec.template.spec.containers')
+
+        echo " "
+        echo "Apply site.yaml 5 of 5"
+        echo "Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, PDBs, Root HTTPProxys, PodTemplates, etc"
+        kubectl apply --selector="sas.com/admin=namespace" -f site.yaml --prune --prune-allowlist=autoscaling/v2/HorizontalPodAutoscaler --prune-allowlist=projectcontour.io/v1/HTTPProxy \
+          | grep -v 'unchanged'
+
+        kubectl -n ${_VIYA_NS} delete pods -l app.kubernetes.io/managed-by=sas-cas-operator --force --ignore-not-found=true
+
+        echo " "
+        echo "Remove Docker Credentials"
+        sed -i "s|  - .dockerconfigjson={.*|  - .dockerconfigjson={#}|g" /workspace/shared/deploy/kustomization.yaml
+
+        echo "Remove SASBoot Credentials"
+        sed -i "s|      password:.*|      password:.#|g" /workspace/shared/deploy/site-config/sitedefault.yaml
+
+        echo "Remove PostgreSQL Service Account Key"
+        rm /workspace/shared/deploy/site-config/postgres/ServiceAccountKey.json
+
+        echo "Remove Postgres Credentials"
+        rm /workspace/shared/deploy/site-config/postgres/platform-postgres-user.env
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Contour_HTTPProxy_Patches
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deploy_SAS_Viya"]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install yq"
+        curl -s -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 --output /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+
+        echo "Patch SAS Root HTTPProxy for TLS Fallback"
+        kubectl -n ${_VIYA_NS} patch httpproxy sas-httpproxy-root --type='json' -p='[
+          {"op":"add","path":"/spec/virtualhost/tls/enableFallbackCertificate","value":true}
+          ]'
+
+        # echo " "
+        # echo "Validate SAS Root HTTPProxy TLS Fallback Patch"
+        # kubectl -n ${_VIYA_NS} get httpproxy sas-httpproxy-root -o yaml
+
+        echo " "
+        echo "Patch SAS Root HTTPProxy for Logging"
+        kubectl -n ${_VIYA_NS} patch httpproxy sas-httpproxy-root --type='json' -p='[
+            {"op":"add","path":"/spec/includes/-","value":{"name":"v4m-osd","namespace":"${_LOG_NS}"}}
+          ]'
+
+        # echo " "
+        # echo "Validate SAS Root HTTPProxy Logging Patch"
+        # kubectl -n ${_VIYA_NS} get httpproxy sas-httpproxy-root -o yaml
+
+        echo " "
+        echo "Patch SAS Root HTTPProxy for Monitoring"
+        kubectl -n ${_VIYA_NS} patch httpproxy sas-httpproxy-root --type='json' -p='[
+            {"op":"add","path":"/spec/includes/-","value":{"name":"v4m-grafana","namespace":"${_MON_NS}"}}
+          ]'
+
+        # echo " "
+        # echo "Validate SAS Root HTTPProxy Monitoring Patch"
+        # kubectl -n ${_VIYA_NS} get httpproxy sas-httpproxy-root -o yaml
+
+        echo " "
+        echo "Create Root HTTPProxy for ${_VIYA_ALIAS}"
+        kubectl -n ${_VIYA_NS} get httpproxy sas-httpproxy-root -o yaml \
+        | yq e '
+          .metadata.name = "sas-httpproxy-root-bupagroup" |
+          .metadata.uid = null |
+          .metadata.resourceVersion = null |
+          .metadata.generation = null |
+          .metadata.creationTimestamp = null |
+          del(.status) |
+          del(.metadata.annotations."kubectl.kubernetes.io/last-applied-configuration") |
+          .spec.virtualhost.fqdn = "${_VIYA_ALIAS}"
+        ' - \
+        | kubectl apply -f -
+
+        # echo " "
+        # echo "Validate Root HTTPProxy for ${_VIYA_ALIAS}"
+        # kubectl -n ${_VIYA_NS} get httpproxy sas-httpproxy-root-bupagroup -o yaml
+
+        echo " "
+        echo "Step Complete"
+
+  - id: Persist_Deployment_Files
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deploy_SAS_Viya"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo " "
+        echo "Google Bucket"
+
+        echo "Ensuring bucket gs://${_BUCKET} exists…"
+        if ! gsutil ls -b "gs://${_BUCKET}" >/dev/null 2>&1; then
+          echo "Bucket does not exist. Creating gs://${_BUCKET} in ${LOCATION}…"
+          if ! gsutil mb -l "${LOCATION}" -c STANDARD -b on "gs://${_BUCKET}"; then
+            echo "Bucket creation may have raced. Verifying existence…"
+            gsutil ls -b "gs://${_BUCKET}"
+          fi
+        else
+          echo "Bucket gs://${_BUCKET} already exists."
+        fi
+        echo "Ensure bucket has public-access-prevention"
+        gcloud storage buckets update "gs://${_BUCKET}" --public-access-prevention
+
+        echo "Export SAS Viya Deployment Files to Google Bucket"
+        gsutil -m rsync -r -d -c -x '(^|/)(sas-bases|certs)(/|$)' \
+          /workspace/shared/deploy "gs://${_BUCKET}/deploy"
+
+        echo " "
+        echo "Step Complete"
+
+  - id: SAS_Viya_SASWork_CAS_Disk_Cache
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deploy_SAS_Viya"]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Create SAS Work DaemonSet"
+        cat << EOF > saswork-dir.yaml
+        apiVersion: apps/v1
+        kind: DaemonSet
+        metadata:
+          name: saswork-dir
+          namespace: kube-system
+        spec:
+          selector:
+            matchLabels:
+              app: saswork-dir
+          template:
+            metadata:
+              labels:
+                app: saswork-dir
+            spec:
+              nodeSelector:
+                cloud.google.com/gke-nodepool: compute
+              tolerations:
+                - operator: Exists
+              initContainers:
+                - name: create-saswork
+                  image: alpine:3.20
+                  securityContext:
+                    privileged: true
+                    runAsUser: 0
+                  command: ["/bin/sh", "-c"]
+                  args:
+                    - |
+                      set -eux
+                      for i in \$(seq 1 60); do
+                        [ -d /host/mnt/disks/ssd0 ] && break
+                        sleep 1
+                      done
+                      chroot /host /bin/sh -c "
+                        mkdir -p ${_SASWORK} &&
+                        chmod 0777 ${_SASWORK} &&
+                        ls -lrt ${_SASWORK}/..
+                      "
+                  volumeMounts:
+                    - name: host-root
+                      mountPath: /host
+              containers:
+                - name: pause
+                  image: registry.k8s.io/pause:3.9
+              volumes:
+                - name: host-root
+                  hostPath:
+                    path: /
+                    type: Directory
+        EOF
+
+        kubectl apply -f saswork-dir.yaml
+
+        echo "Check SAS Work DaemonSet"
+        kubectl get ds saswork-dir -n kube-system
+        kubectl logs -n kube-system -l app=saswork-dir -c create-saswork
+
+        echo "Create CAS Disk Cache DaemonSet"
+        cat << EOF > cas-disk-cache-dir.yaml
+        apiVersion: apps/v1
+        kind: DaemonSet
+        metadata:
+          name: cas-disk-cache-dir
+          namespace: kube-system
+        spec:
+          selector:
+            matchLabels:
+              app: cas-disk-cache-dir
+          template:
+            metadata:
+              labels:
+                app: cas-disk-cache-dir
+            spec:
+              nodeSelector:
+                cloud.google.com/gke-nodepool: cas
+              tolerations:
+                - operator: Exists
+              initContainers:
+                - name: create-cas-disk-cache
+                  image: alpine:3.20
+                  securityContext:
+                    privileged: true
+                    runAsUser: 0
+                  command: ["/bin/sh", "-c"]
+                  args:
+                    - |
+                      set -eux
+                      for i in \$(seq 1 60); do
+                        [ -d ${_CAS_DISK_CACHE}0 ] && break
+                        sleep 1
+                      done
+                      chroot /host /bin/sh -c "
+                        mkdir -p ${_CAS_DISK_CACHE} &&
+                        chmod 0777 ${_CAS_DISK_CACHE}* &&
+                        ls -lrt ${_CAS_DISK_CACHE}/..
+                      "
+                  volumeMounts:
+                    - name: host-root
+                      mountPath: /host
+              containers:
+                - name: pause
+                  image: registry.k8s.io/pause:3.9
+              volumes:
+                - name: host-root
+                  hostPath:
+                    path: /
+                    type: Directory
+        EOF
+
+        kubectl apply -f cas-disk-cache-dir.yaml
+
+        echo "Check Create CAS Disk Cache DaemonSet"
+        kubectl get ds cas-disk-cache-dir -n kube-system
+        kubectl logs -n kube-system -l app=cas-disk-cache-dir -c create-cas-disk-cache
+
+        echo " "
+        echo "Step Complete"
+
+
+  - id: Configure_Secrets_Store_CSI_Driver
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deploy_SAS_Viya","Deploy_Secrets_CSI_Driver"]
+    entrypoint: bash
+    volumes:
+      - name: shared
+        path: /workspace/shared
+    args:
+      - -c
+      - |
+        set -euo pipefail                                                                                                                                 
+
+        echo "SAS Compute - Create SecretProviderClass"
+        cat <<EOF > compute-secret-provider-class.yaml
+        apiVersion: secrets-store.csi.x-k8s.io/v1
+        kind: SecretProviderClass
+        metadata:
+          name: compute-secrets
+          namespace: ${_VIYA_NS}
+        spec:
+          provider: gcp
+          parameters:
+            secrets: |
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/sasmail_server_client_secret/versions/latest"
+                path: "sasmail_server_client_secret"
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/sasmail_server_client_id/versions/latest"
+                path: "sasmail_server_client_id"
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/entra_id_tenant_id/versions/latest"
+                path: "entra_id_tenant_id"
+        EOF
+
+        kubectl apply -f compute-secret-provider-class.yaml
+
+        echo "SAS Compute - Patch SAS Compute PodTemplate"
+        cat <<EOF > sas-compute-job-config.secretmount.patch.yaml
+        apiVersion: v1
+        kind: PodTemplate
+        metadata:
+          name: sas-compute-job-config
+          namespace: ${_VIYA_NS}
+        template:
+          spec:
+            volumes:
+              - name: gcp-secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: compute-secrets
+            containers:
+              - name: sas-programming-environment
+                volumeMounts:
+                  - name: gcp-secrets
+                    mountPath: /var/secrets/gcp
+                    readOnly: true
+        EOF
+
+        kubectl patch podtemplate sas-compute-job-config -n ${_VIYA_NS} \
+          --type='strategic' --patch-file=sas-compute-job-config.secretmount.patch.yaml
+
+        echo "SAS Batch - Create SecretProviderClass"
+        cat <<EOF > batch-secret-provider-class.yaml
+        apiVersion: secrets-store.csi.x-k8s.io/v1
+        kind: SecretProviderClass
+        metadata:
+          name: batch-secrets
+          namespace: ${_VIYA_NS}
+        spec:
+          provider: gcp
+          parameters:
+            secrets: |
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/entra_id_tenant_id/versions/latest"
+                path: "entra_id_tenant_id"
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/snowflake_batch_encrypt_key/versions/latest"
+                path: "snowflake_batch_encrypt_key"
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/snowflake_batch_p8/versions/latest"
+                path: "snowflake_batch_p8.p8"
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/sasmail_server_client_secret/versions/latest"
+                path: "sasmail_server_client_secret"
+              - resourceName: "projects/${PROJECT_NUMBER}/secrets/sasmail_server_client_id/versions/latest"
+                path: "sasmail_server_client_id"
+        EOF
+
+        kubectl apply -f batch-secret-provider-class.yaml
+
+        echo "SAS Batch - Patch SAS Batch PodTemplate"
+        cat <<EOF > sas-batch-pod-template.secretmount.patch.yaml
+        apiVersion: v1
+        kind: PodTemplate
+        metadata:
+          name: sas-batch-pod-template
+          namespace: ${_VIYA_NS}
+        template:
+          spec:
+            volumes:
+              - name: gcp-secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: batch-secrets
+            containers:
+              - name: sas-programming-environment
+                volumeMounts:
+                  - name: gcp-secrets
+                    mountPath: /var/secrets/gcp
+                    readOnly: true
+        EOF
+
+        kubectl patch podtemplate sas-batch-pod-template -n ${_VIYA_NS} \
+          --type='strategic' --patch-file=sas-batch-pod-template.secretmount.patch.yaml
+
+        echo " "
+        echo "Step Complete"
+
+  - id: SAS_Viya_QA
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["Deploy_SAS_Viya"]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "Install JQ"
+        apt-get install -y -qq jq >/dev/null
+
+        echo " "
+        echo "Wait for SAS to start 45 min timeout"
+        kubectl wait -n "${_VIYA_NS}" \
+          --for=condition=ready pod \
+          --selector="app.kubernetes.io/name=sas-readiness" \
+          --timeout=2700s && echo 'SAS Viya Start Up Complete'
+
+        sleep 120
+
+        kubectl wait -n "${_VIYA_NS}" \
+          --for=condition=ready pod \
+          --selector="app.kubernetes.io/name=sas-readiness" \
+          --timeout=2700s
+
+        echo " "
+        echo "HTTPProxy Status"
+        kubectl get httpproxy -A
+
+        echo " "
+        echo "Pod Status"
+        kubectl get pods -n "${_VIYA_NS}" --no-headers \
+          | awk '{print $3}' | sort | uniq -c
+
+        echo " "
+        echo "Pods Not Ready"
+        kubectl -n ${_VIYA_NS} get pods -o jsonpath='{range .items[?(@.status.containerStatuses[].ready==false)]}{.metadata.name}{" "}{.status.phase}{"\n"}' | grep -v Succeeded
+
+        echo " "
+        echo "Key Pod Status"
+        kubectl -n "${_VIYA_NS}" get pods \
+          -l 'app in(sas-consul-server,sas-data-server-operator,sas-rabbitmq-server,sas-arke,sas-redis-server,sas-logon-app,sas-identities,sas-configuration,sas-authorization,sas-job-execution,sas-folders)'
+
+        echo " "
+        echo "Check Postgres Connectivity"
+        kubectl -n "${_VIYA_NS}" logs -l app=sas-data-server-operator \
+          | jq -Rr 'fromjson? | [.timeStamp,"[",.level,"]",.message] | join(" ")' \
+          | grep Reconcile || true
+
+        echo " "
+        echo "SAS-Readiness Log"
+        kubectl logs -n "${_VIYA_NS}" --selector="app.kubernetes.io/name=sas-readiness" \
+          | jq -Rr 'fromjson? | [.timeStamp,"[",.level,"]",.message] | join(" ")' | tail -n 3
+        
+        echo "Pacth PVs to Retain"
+        kubectl get pv | grep sas-viya-consul-data-volume-sas-consul-server | awk '{print $1}' | while read pv; do
+          kubectl patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+        done
+
+        kubectl get pv | grep sas-common-backup-data | awk '{print $1}' | while read pv; do
+          kubectl patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+        done
+
+        kubectl get pv | grep sas-cas-backup-data | awk '{print $1}' | while read pv; do
+          kubectl patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+        done
+
+        echo " "
+        echo "SAS PVCs"
+        kubectl get pvc -n ${_VIYA_NS}
+
+        echo " "
+        echo "Step Complete"
+
+substitutions:
+  _PROJECT_ID: bguk-buki-sas-viya-dev-6155527
+  _CLUSTER_NAME: sasvya-gke-dev
+  _REGION: europe-west2-b
+  _PG_USER: dbmsowner
+  _SAS_ORDER_NUMBER: "9D3KDR"
+  _AR_REPO: sasviya-repo-dev
+  _BUCKET: assets_sas_viya_dev
+  _ING_NS: ingress-dev
+  _VIYA_NS: sas-viya-dev
+  _MON_NS: monitoring-dev
+  _LOG_NS: logging-dev
+  _VIYA_HOST: aap-dv.bupa.com
+  _VIYA_ALIAS: aap-dv.gb.bupagroup.com
+  _TLS_NAME: aap-dv.bupa.com
+  _NFS_MOUNT: /mnt
+  _SASWORK: /mnt/disks/ssd0/saswork
+  _CAS_DISK_CACHE: /mnt/disks/ssd
+  _SAS_CADENCE_NAME: stable
+  _SAS_CADENCE_VERSION: "2026.07"
+  _CSI_NFS_VERSION: "4.13.4"
+  _ORDERS_CLI_VERSION: "2.0.1"
+  _KUSTOMIZE_VERSION: "5.4.3"
+  _ING_VERSION: "0.6.0"
+  _V4M_VERSION: "1.2.52"
+  #_OIDC_ATT_MAP: "preferred_username"
+  #_OIDC_NAME: "oidc_azure"
+
+timeout: 3600s # 1 hour
+tags:
+  - provision
+  - branch-$BRANCH_NAME

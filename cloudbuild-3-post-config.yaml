@@ -1,0 +1,230 @@
+steps:
+  - name: "gcr.io/cloud-builders/kubectl"
+    entrypoint: "bash"
+    env:
+      - "CLOUDSDK_COMPUTE_ZONE=europe-west2-a"
+      - "CLOUDSDK_CONTAINER_CLUSTER=sas-viya-dev"
+    args:
+      - "-c"
+      - |
+        echo "Applying Pod Security Admission labels to application namespaces..."
+
+        kubectl label namespace sas-viya-dev pod-security.kubernetes.io/enforce=baseline 
+        kubectl label namespace ingress-dev pod-security.kubernetes.io/enforce=baseline
+        kubectl label namespace logging-dev pod-security.kubernetes.io/enforce=baseline 
+        kubectl label namespace monitoring-dev pod-security.kubernetes.io/enforce=baseline 
+        kubectl label namespace default pod-security.kubernetes.io/enforce=baseline
+
+  - id: SAS_Viya_Autoscale
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["SAS_Viya_QA"]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        export SASBOOT_PW=$(gcloud secrets versions access latest --secret="sasboot")
+
+        echo "Install SAS Viya CLI"
+        cp sas-viya /usr/local/bin/
+        chmod +x /usr/local/bin/sas-viya
+
+        echo " "
+        echo "Create SAS Viya CLI default profile"
+        sas-viya profile init --sas-endpoint https://${_VIYA_ALIAS} --with-defaults
+
+        echo " "
+        echo "Install SAS Viya CLI Plugins"
+        sas-viya plugins install --repo SAS all
+
+        echo " "
+        echo "SAS Viya CLI sasboot login"
+        kubectl -n ${_VIYA_NS} cp $(kubectl get pod -n ${_VIYA_NS} | grep "sas-logon-app" | head -1 | awk -F" " '{print $1}'):/security/trustedcerts.pem trustedcerts.pem
+
+        export SSL_CERT_FILE=trustedcerts.pem
+
+        sas-viya auth login --user sasboot --password $${SASBOOT_PW}
+
+        echo "Enable SAS Workload Orchestrator Kubernetes Cluster Autoscaler"
+        # sas-viya --output fulljson  workload-orchestrator config grid get > workload-orchestrator-config.json
+
+        # if ! grep -q '"scalable":[[:space:]]*true' workload-orchestrator-config.json; then
+        #   sed -i '/"role"[[:space:]]*:[[:space:]]*"server"/a\            "scalable": true,' \
+        #     workload-orchestrator-config.json
+        # fi
+
+        # sas-viya workload-orchestrator config grid set --json-file workload-orchestrator-config.json
+
+        echo " "
+        echo "Step Complete"
+
+  - id: SAS_Viya_Entra_ID_SCIM
+    name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+    waitFor: ["SAS_Viya_QA"]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        echo "SCIM Access Token"
+        export SASBOOT_PW=$(gcloud secrets versions access latest --secret="sasboot")
+        export SCIM_CLIENT_ID=$(gcloud secrets versions access latest --secret="SAS_SCIM_CLIENT_ID")
+        export SCIM_CLIENT_SECRET=$(gcloud secrets versions access latest --secret="SAS_SCIM_CLIENT_SECRET")
+
+        # echo "Obtain a Bearer Token"
+        # export BEARER_TOKEN=`curl -sk -X POST \
+        # "https://${_VIYA_ALIAS}/SASLogon/oauth/token" \
+        # -u "sas.cli:" \
+        # -H "Content-Type: application/x-www-form-urlencoded" \
+        # -d "grant_type=password&username=sasboot&password=$${SASBOOT_PW}" | awk -F: '{print $2}'|awk -F\" '{print $2}'`
+
+        # echo "Register Client"
+        # curl -k -X POST "https://${_VIYA_ALIAS}/SASLogon/oauth/clients" \
+        #     -H "Content-Type: application/json" \
+        #     -H "Authorization: Bearer $${BEARER_TOKEN}" \
+        #     -d '{
+        #         "client_id": "$${SCIM_CLIENT_ID}",
+        #         "client_secret": "$${SCIM_CLIENT_SECRET}",
+        #         "authorities": ["SCIM"],
+        #         "authorized_grant_types": ["client_credentials"],
+        #         "access_token_validity": 63070000
+        #         }'
+
+        # echo " "
+        # echo "Get Access Token"
+        # ACCESS_TOKEN=`curl -skX POST "https://${_VIYA_ALIAS}/SASLogon/oauth/token" \
+        #   -H "Content-Type: application/x-www-form-urlencoded" \
+        #   -d "grant_type=client_credentials" \
+        #   -u "$${SCIM_CLIENT_ID}:$${SCIM_CLIENT_SECRET}"| awk -F: '{print $2}'|awk -F\" '{print $2}'`;
+
+        # echo "Add Access Token to Google Secret 'scim_secret'"
+        # printf %s "$${ACCESS_TOKEN}" | gcloud secrets versions add scim_secret --data-file=-
+
+        # echo " "
+        # echo "The Tenant URL is"
+        # echo "https://${_VIYA_ALIAS}/identities/scim/v2"
+        # echo " "
+        # echo "The Access Token is in Google Secret 'scim_secret'"
+        # echo " "
+
+        echo " "
+        echo "Step Complete"
+
+  # - id: SAS_Viya_Entra_ID_OIDC
+  #   name: europe-west2-docker.pkg.dev/platformtfe-203990/bupa-platform-build-reg/gcloud_helm:v1
+  #   waitFor: ["SAS_Viya_QA","SAS_Viya_Autoscale"]
+  #   entrypoint: bash
+  #   args:
+  #     - -c
+  #     - |
+  #      set -euo pipefail
+
+  #      echo " "
+  #      echo "Set Environment Variables"
+  #      export SASBOOT_PW=$(gcloud secrets versions access latest --secret="sasboot")
+  #      export OIDC_RELAY_PARTY_ID=$(gcloud secrets versions access latest --secret="entra_id_relay_party_id")
+  #      export OIDC_RELAY_PARTY_SEC=$(gcloud secrets versions access latest --secret="entra_id_relay_party_sec")
+  #      export OIDC_TENANT_ID=$(gcloud secrets versions access latest --secret="entra_id_tenant_id")
+  #      export SNOWFLAKE_OIDC_ID=$(gcloud secrets versions access latest --secret="snowflake_entra_id_client_id")
+
+  #      bash -c 'cat <<EOF > oidc_sas_logon_oauth_providers.json
+  #      {
+  #          "accept": "application/vnd.sas.configuration.config+json",
+  #          "name": "configurations",
+  #          "items": [
+  #              {
+  #                  "metadata": {
+  #                      "isDefault": false,
+  #                      "mediaType": "application/vnd.sas.configuration.config.sas.logon.oauth.providers+json;version=8",
+  #                      "services": [
+  #                          "SASLogon"
+  #                      ]
+  #                  },
+  #                  "version": 1,
+  #                    "addShadowUserOnLogin": true,
+  #                    "additionalAuthzParameters": {},
+  #                    "additionalConfiguration": {
+  #                      "credentials.enabled": "true"
+  #                    },
+  #                    "attributeMappings.user_name": "${_OIDC_ATT_MAP}",
+  #                    "authUrl": "https://login.microsoftonline.com/$${OIDC_TENANT_ID}/oauth2/v2.0/authorize",
+  #                    "cacheJwks": true,
+  #                    "clientAuthInBody": false,
+  #                    "discoveryUrl": "https://login.microsoftonline.com/$${OIDC_TENANT_ID}/v2.0/.well-known/openid-configuration",
+  #                    "groupMappingMode": "AS_SCOPES",
+  #                    "jwtclientAuthentication": false,
+  #                    "linkText": "Use your BUPA corporate credentials",
+  #                    "name": "${_OIDC_NAME}",
+  #                    "performRpInitiatedLogout": true,
+  #                    "relyingPartyId": "$${OIDC_RELAY_PARTY_ID}",
+  #                    "relyingPartySecret": "$${OIDC_RELAY_PARTY_SEC}",
+  #                    "responseType": "code",
+  #                    "scopes": "openid,profile,offline_access,api://$${SNOWFLAKE_OIDC_ID}/.default",
+  #                    "showLinkText": true,
+  #                    "tokenUrl": "https://login.microsoftonline.com/$${OIDC_TENANT_ID}/oauth2/v2.0/token"
+  #                      }
+  #          ]
+  #      }
+  #      EOF'
+
+  #       echo "Install SAS Viya CLI"
+  #       cp sas-viya /usr/local/bin/
+  #       chmod +x /usr/local/bin/sas-viya
+
+  #       echo " "
+  #       echo "Create SAS Viya CLI default profile"
+  #       sas-viya profile init --sas-endpoint https://${_VIYA_ALIAS} --with-defaults
+
+  #       echo " "
+  #       echo "Install SAS Viya CLI Plugins"
+  #       sas-viya plugins install --repo SAS all
+
+  #       echo " "
+  #       echo "SAS Viya CLI sasboot login"
+  #       kubectl -n ${_VIYA_NS} cp $(kubectl get pod -n ${_VIYA_NS} | grep "sas-logon-app" | head -1 | awk -F" " '{print $1}'):/security/trustedcerts.pem trustedcerts.pem
+
+  #       export SSL_CERT_FILE=trustedcerts.pem
+
+  #       sas-viya auth login --user sasboot --password $${SASBOOT_PW}
+
+  #       # echo " "
+  #       # echo "Configure Microsoft Entra ID OIDC"
+  #       # sas-viya configuration configurations update --file oidc_sas_logon_oauth_providers.json
+
+  #       echo " "
+  #       echo "Step Complete"
+
+substitutions:
+  _PROJECT_ID: bguk-buki-sas-viya-dev-6155527
+  _CLUSTER_NAME: sasvya-gke-dev
+  _REGION: europe-west2-b
+  _PG_USER: dbmsowner
+  _SAS_ORDER_NUMBER: "9D3KDR"
+  _AR_REPO: sasviya-repo-dev
+  _BUCKET: assets_sas_viya_dev
+  _ING_NS: ingress-dev
+  _VIYA_NS: sas-viya-dev
+  _MON_NS: monitoring-dev
+  _LOG_NS: logging-dev
+  _VIYA_HOST: aap-dv.bupa.com
+  _VIYA_ALIAS: aap-dv.gb.bupagroup.com
+  _TLS_NAME: aap-dv.bupa.com
+  _NFS_MOUNT: /mnt
+  _SASWORK: /mnt/disks/ssd0/saswork
+  _CAS_DISK_CACHE: /mnt/disks/ssd
+  _SAS_CADENCE_NAME: stable
+  _SAS_CADENCE_VERSION: "2026.07"
+  _CSI_NFS_VERSION: "4.13.4"
+  _ORDERS_CLI_VERSION: "2.0.1"
+  _KUSTOMIZE_VERSION: "5.4.3"
+  _ING_VERSION: "0.6.0"
+  _V4M_VERSION: "1.2.52"
+  #_OIDC_ATT_MAP: "preferred_username"
+  #_OIDC_NAME: "oidc_azure"
+
+timeout: 3600s # 1 hour
+tags:
+  - provision
+  - branch-$BRANCH_NAME
