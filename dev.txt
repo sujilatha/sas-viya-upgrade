@@ -104,7 +104,7 @@ vpc_subnetwork_name               = "shared-vpc-sas-viyadev-europewest2"
 gke_ip_range_pods_name            = "sas-viya-gke-pods-range-dev"
 gke_ip_range_services_name        = "sas-viya-gke-services-range-dev"
 gke_release_channel               = "STABLE"
-gke_version                       = "1.35-gke.1057002"
+gke_version                       = "1.35-gke.1000207"
 gke_http_load_balancing           = true
 gke_network_policy                = false
 gke_horizontal_pod_autoscaling    = true
@@ -362,6 +362,7 @@ echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud
 curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
 sudo apt-get update -y
 sudo apt-get install -y google-cloud-sdk-gke-gcloud-auth-plugin
+gcloud components install kubectl -y
 
 # Install Kustomize 5.4.3
 # KUSTOMIZE_VERSION="v5.4.3"
@@ -509,6 +510,7 @@ echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud
 curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
 sudo apt-get update -y
 sudo apt-get install -y google-cloud-sdk-gke-gcloud-auth-plugin kubectl
+gcloud components install kubectl -y
 
 # Install Helm v3.15.2
 # HELM_VERSION=v3.15.2

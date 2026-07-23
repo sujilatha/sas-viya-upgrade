@@ -561,6 +561,7 @@ echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud
 curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
 sudo apt-get update -y
 sudo apt-get install -y google-cloud-sdk-gke-gcloud-auth-plugin kubectl
+gcloud components install kubectl -y
 
 # Install Helm v3.15.2
 # HELM_VERSION=v3.15.2
